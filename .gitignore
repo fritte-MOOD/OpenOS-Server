@@ -1,0 +1,28 @@
+# Nix
+result
+result-*
+
+# Secrets (encrypted files are OK, but never plaintext)
+secrets/*.key
+secrets/*.pem
+!secrets/*.age
+!secrets/secrets.nix
+
+# Go
+api/openos-api
+api/vendor/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local dev
+dev.db
+*.log
