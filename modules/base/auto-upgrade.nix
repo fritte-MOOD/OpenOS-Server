@@ -149,6 +149,7 @@ in {
           # Rebuild
           nixos-rebuild switch \
             --flake "$FLAKE_DIR#openos" \
+            --impure \
             --no-write-lock-file \
             2>&1 | tee -a "$STATE_DIR/update.log"
 
@@ -198,6 +199,7 @@ in {
 
         nixos-rebuild switch \
           --flake "$FLAKE_DIR#openos" \
+          --impure \
           --no-write-lock-file \
           2>&1
 
@@ -241,6 +243,7 @@ in {
 
         nixos-rebuild switch \
           --flake "$FLAKE_DIR#openos" \
+          --impure \
           --no-write-lock-file \
           2>&1
 

@@ -22,6 +22,7 @@ func (g *Generator) Rebuild(ctx context.Context) (*RebuildResult, error) {
 
 	cmd := exec.CommandContext(ctx, "sudo", "nixos-rebuild", "switch",
 		"--flake", g.flakePath+"#openos",
+		"--impure",
 		"--no-write-lock-file",
 	)
 
@@ -60,6 +61,7 @@ func (g *Generator) RebuildDryRun(ctx context.Context) (*RebuildResult, error) {
 
 	cmd := exec.CommandContext(ctx, "sudo", "nixos-rebuild", "dry-activate",
 		"--flake", g.flakePath+"#openos",
+		"--impure",
 		"--no-write-lock-file",
 	)
 

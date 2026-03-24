@@ -2,8 +2,11 @@
 {
   imports = [
     ./hardware-generic.nix
-    /etc/openos/apps.nix
-  ];
+  ] ++ (
+    if builtins.pathExists /etc/openos/apps.nix
+    then [ /etc/openos/apps.nix ]
+    else [ ]
+  );
 
   networking.hostName = "openos";
 

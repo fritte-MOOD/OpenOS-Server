@@ -122,6 +122,7 @@ let
 
     /run/current-system/sw/bin/nixos-rebuild switch \
       --flake "$FLAKE_DIR#$FLAKE_TARGET" \
+      --impure \
       --option substituters "https://cache.nixos.org" \
       --option trusted-public-keys "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=" \
       2>&1
