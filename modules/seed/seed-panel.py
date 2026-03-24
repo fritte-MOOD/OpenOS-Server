@@ -10,6 +10,8 @@ import json
 import os
 import subprocess
 import socket
+import threading
+import time
 
 PORT = 80
 STATE_DIR = "/var/lib/openos-seed"
@@ -21,6 +23,11 @@ NIXOS_PATH = "/run/current-system/sw/bin"
 os.makedirs(STATE_DIR, exist_ok=True)
 
 ENV_WITH_PATH = {**os.environ, "PATH": NIXOS_PATH + ":" + os.environ.get("PATH", "")}
+
+# Global install log shared between the install thread and SSE clients
+install_log = []
+install_running = False
+install_done = False
 
 
 def get_ip():
@@ -65,6 +72,59 @@ def get_system_info():
     return info
 
 
+def run_install_bg(config):
+    """Run the install in a background thread, streaming output to install_log."""
+    global install_log, install_running, install_done
+    install_log = []
+    install_running = True
+    install_done = False
+
+    hostname = config.get("hostname", "openos")
+    domain = config.get("domain", "openos.local")
+    timezone = config.get("timezone", "UTC")
+    password = config.get("password", "")
+    headscale_url = config.get("headscale_url", "")
+    repo_url = config.get("repo_url", REPO_URL)
+    channel = config.get("channel", "nightly")
+
+    def log(msg):
+        install_log.append(msg)
+
+    log("=== OpenOS Installation ===")
+    log("Hostname: %s" % hostname)
+    log("Domain: %s" % domain)
+    log("Channel: %s" % channel)
+    log("")
+    log("Running seed-pull script...")
+
+    try:
+        proc = subprocess.Popen(
+            [BASH, SEED_PULL, repo_url, channel, hostname, domain, timezone, password, headscale_url],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1,
+            env=ENV_WITH_PATH
+        )
+
+        for line in iter(proc.stdout.readline, ''):
+            log(line.rstrip())
+
+        proc.wait()
+
+        if proc.returncode == 0:
+            log("")
+            log("=== Installation complete! ===")
+            log("The server will reboot in 15 seconds...")
+            subprocess.Popen([BASH, "-c", "sleep 15 && systemctl reboot -i || reboot -f"],
+                             env=ENV_WITH_PATH)
+        else:
+            log("Installation FAILED with exit code %d" % proc.returncode)
+    except Exception as e:
+        log("ERROR: %s" % e)
+
+    install_running = False
+    install_done = True
+
+
 SETUP_HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -76,7 +136,7 @@ SETUP_HTML = r"""<!DOCTYPE html>
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
          background: #0a0a0a; color: #e5e5e5; min-height: 100vh;
          display: flex; align-items: center; justify-content: center; }
-  .container { max-width: 600px; width: 100%; padding: 2rem; }
+  .container { max-width: 640px; width: 100%; padding: 2rem; }
   h1 { font-size: 1.8rem; margin-bottom: 0.5rem; color: #fff; }
   .subtitle { color: #888; margin-bottom: 2rem; }
   .info-box { background: #1a1a1a; border: 1px solid #333; border-radius: 8px;
@@ -98,12 +158,12 @@ SETUP_HTML = r"""<!DOCTYPE html>
   button:disabled { background: #555; color: #888; cursor: not-allowed; }
   .btn-secondary { background: #333; color: #fff; }
   .btn-secondary:hover { background: #444; }
-  .log { background: #000; border: 1px solid #333; border-radius: 4px;
+  #log { background: #000; border: 1px solid #333; border-radius: 4px;
          padding: 0.8rem; font-family: monospace; font-size: 0.8rem;
-         max-height: 400px; overflow-y: auto; white-space: pre-wrap;
+         height: 350px; overflow-y: auto; white-space: pre-wrap;
          color: #aaa; display: none; margin-top: 1rem; }
   .status { text-align: center; padding: 0.5rem; border-radius: 4px;
-            margin-top: 0.5rem; font-size: 0.9rem; }
+            margin-top: 0.5rem; font-size: 0.9rem; display: none; }
   .status.ok { background: #052e16; color: #22c55e; }
   .status.err { background: #2d0a0a; color: #ef4444; }
   .status.working { background: #1a1000; color: #f97316; }
@@ -129,7 +189,7 @@ SETUP_HTML = r"""<!DOCTYPE html>
   </div>
 
   <form id="setupForm">
-    <div class="step" id="step1">
+    <div class="step">
       <h2>1. Server Configuration</h2>
       <label>Hostname</label>
       <input name="hostname" value="openos" required>
@@ -141,14 +201,14 @@ SETUP_HTML = r"""<!DOCTYPE html>
       <input name="password" type="password" required minlength="8">
     </div>
 
-    <div class="step" id="step2">
+    <div class="step">
       <h2>2. Network (Tailscale)</h2>
       <label>Headscale Server URL (optional)</label>
       <input name="headscale_url" placeholder="https://hs.example.com">
       <p style="color:#666;font-size:0.8rem;">Leave empty to configure later.</p>
     </div>
 
-    <div class="step" id="step3">
+    <div class="step">
       <h2>3. OpenOS Version</h2>
       <label>Repository</label>
       <input name="repo_url" value="https://github.com/fritte-MOOD/OpenOS-Server.git">
@@ -164,8 +224,8 @@ SETUP_HTML = r"""<!DOCTYPE html>
     <button type="button" class="btn-secondary" id="termBtn">Open Terminal</button>
   </form>
 
-  <div class="log" id="log"></div>
-  <div class="status" id="status" style="display:none;"></div>
+  <div id="log"></div>
+  <div class="status" id="status"></div>
 
   <div class="terminal" id="terminal">
     <h2 style="color:#fff;margin-bottom:0.5rem;">Terminal</h2>
@@ -179,10 +239,14 @@ SETUP_HTML = r"""<!DOCTYPE html>
 
 <script>
 (function(){
+  var logEl = document.getElementById('log');
+  var statusEl = document.getElementById('status');
+  var pollTimer = null;
+
   fetch('/api/info').then(function(r){return r.json()}).then(function(d){
-    document.getElementById('ip').textContent=d.ip||'?';
-    document.getElementById('arch').textContent=d.arch||'?';
-    document.getElementById('memory').textContent=(d.memory_gb||'?')+' GB';
+    document.getElementById('ip').textContent = d.ip || '?';
+    document.getElementById('arch').textContent = d.arch || '?';
+    document.getElementById('memory').textContent = (d.memory_gb || '?') + ' GB';
   });
 
   document.getElementById('termBtn').addEventListener('click', function(){
@@ -213,44 +277,68 @@ SETUP_HTML = r"""<!DOCTYPE html>
 
   document.getElementById('termRun').addEventListener('click', runCmd);
   document.getElementById('termCmd').addEventListener('keypress', function(e){
-    if(e.key==='Enter') runCmd();
+    if (e.key === 'Enter') runCmd();
   });
+
+  function pollLog() {
+    var linesSeen = parseInt(logEl.getAttribute('data-lines') || '0');
+    fetch('/api/install-log?from=' + linesSeen)
+      .then(function(r){ return r.json() })
+      .then(function(data){
+        if (data.lines && data.lines.length > 0) {
+          for (var i = 0; i < data.lines.length; i++) {
+            logEl.textContent = logEl.textContent + data.lines[i] + '\n';
+          }
+          logEl.setAttribute('data-lines', String(linesSeen + data.lines.length));
+          logEl.scrollTop = logEl.scrollHeight;
+        }
+        if (data.done && data.lines.length === 0) {
+          clearInterval(pollTimer);
+          var lastLine = logEl.textContent.trim().split('\n').pop() || '';
+          if (lastLine.indexOf('complete') >= 0) {
+            statusEl.className = 'status ok';
+            statusEl.style.display = 'block';
+            statusEl.textContent = 'Installation complete! Server will reboot shortly.';
+          } else if (lastLine.indexOf('FAILED') >= 0 || lastLine.indexOf('ERROR') >= 0) {
+            statusEl.className = 'status err';
+            statusEl.style.display = 'block';
+            statusEl.textContent = 'Installation failed. Check the log above.';
+            document.getElementById('installBtn').disabled = false;
+            document.getElementById('installBtn').textContent = 'Retry';
+          }
+        }
+      })
+      .catch(function(){});
+  }
 
   document.getElementById('setupForm').addEventListener('submit', function(e){
     e.preventDefault();
-    var btn=document.getElementById('installBtn');
-    var log=document.getElementById('log');
-    var status=document.getElementById('status');
-    btn.disabled=true; btn.textContent='Installing...';
-    log.style.display='block'; log.textContent='Starting installation...\n';
-    status.style.display='block'; status.className='status working';
-    status.textContent='Installing... this may take 10-30 minutes.';
+    var btn = document.getElementById('installBtn');
+    btn.disabled = true;
+    btn.textContent = 'Installing...';
+    logEl.style.display = 'block';
+    logEl.textContent = '';
+    logEl.setAttribute('data-lines', '0');
+    statusEl.style.display = 'block';
+    statusEl.className = 'status working';
+    statusEl.textContent = 'Installing... this may take 10-30 minutes. Do not close this page.';
 
-    var fd=new FormData(e.target);
-    var data=Object.fromEntries(fd.entries());
+    var fd = new FormData(e.target);
+    var data = Object.fromEntries(fd.entries());
 
-    fetch('/api/install',{method:'POST',
-      headers:{'Content-Type':'application/json'},body:JSON.stringify(data)
-    }).then(function(res){
-      var reader=res.body.getReader();
-      var decoder=new TextDecoder();
-      function pump(){
-        return reader.read().then(function(result){
-          if(result.done) return;
-          log.textContent = log.textContent + decoder.decode(result.value);
-          log.scrollTop=log.scrollHeight;
-          return pump();
-        });
+    fetch('/api/install', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(data)
+    }).then(function(r){ return r.json() }).then(function(resp){
+      if (resp.ok) {
+        pollTimer = setInterval(pollLog, 2000);
       }
-      return pump();
-    }).then(function(){
-      status.className='status ok';
-      status.textContent='Installation complete! The server will reboot in 10 seconds.';
-      btn.textContent='Done';
     }).catch(function(err){
-      status.className='status err';
-      status.textContent='Installation failed: '+err.message;
-      btn.disabled=false; btn.textContent='Retry';
+      statusEl.className = 'status err';
+      statusEl.textContent = 'Failed to start: ' + err.message;
+      btn.disabled = false;
+      btn.textContent = 'Retry';
     });
   });
 })();
@@ -271,10 +359,7 @@ class SeedHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(SETUP_HTML.encode())
 
         elif self.path == "/api/info":
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps(get_system_info()).encode())
+            self._json_response(get_system_info())
 
         elif self.path == "/api/status":
             mode = "seed"
@@ -283,41 +368,44 @@ class SeedHandler(http.server.BaseHTTPRequestHandler):
                     mode = f.read().strip()
             except Exception:
                 pass
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({
+            self._json_response({
                 "mode": mode,
                 "hostname": socket.gethostname(),
                 "ip": get_ip(),
-            }).encode())
+            })
+
+        elif self.path.startswith("/api/install-log"):
+            from_line = 0
+            if "from=" in self.path:
+                try:
+                    from_line = int(self.path.split("from=")[1])
+                except Exception:
+                    pass
+            lines = install_log[from_line:]
+            self._json_response({
+                "lines": lines,
+                "total": len(install_log),
+                "running": install_running,
+                "done": install_done,
+            })
 
         else:
             self.send_error(404)
 
     def do_POST(self):
         if self.path == "/api/install":
+            global install_running
             length = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(length)) if length else {}
 
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain")
-            self.send_header("Transfer-Encoding", "chunked")
-            self.end_headers()
+            if install_running:
+                self._json_response({"ok": False, "error": "Install already running"})
+                return
 
-            def send_line(msg):
-                line = msg + "\n"
-                chunk = "%x\r\n%s\r\n" % (len(line.encode()), line)
-                self.wfile.write(chunk.encode())
-                self.wfile.flush()
+            t = threading.Thread(target=run_install_bg, args=(body,), daemon=True)
+            t.start()
 
-            try:
-                self._run_install(body, send_line)
-            except Exception as e:
-                send_line("ERROR: %s" % e)
-
-            self.wfile.write(b"0\r\n\r\n")
-            self.wfile.flush()
+            self._json_response({"ok": True, "message": "Install started"})
 
         elif self.path == "/api/exec":
             length = int(self.headers.get("Content-Length", 0))
@@ -341,61 +429,22 @@ class SeedHandler(http.server.BaseHTTPRequestHandler):
                 result["stderr"] = "Error: %s\n" % e
                 result["code"] = -1
 
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps(result).encode())
+            self._json_response(result)
 
         else:
             self.send_error(404)
 
-    def _run_install(self, config, send):
-        hostname = config.get("hostname", "openos")
-        domain = config.get("domain", "openos.local")
-        timezone = config.get("timezone", "UTC")
-        password = config.get("password", "")
-        headscale_url = config.get("headscale_url", "")
-        repo_url = config.get("repo_url", REPO_URL)
-        channel = config.get("channel", "stable")
-
-        send("=== OpenOS Installation ===")
-        send("Hostname: %s" % hostname)
-        send("Domain: %s" % domain)
-        send("Channel: %s" % channel)
-        send("Bash: %s" % BASH)
-        send("Script: %s" % SEED_PULL)
-        send("")
-
-        send("Pulling OpenOS from GitHub...")
-        try:
-            proc = subprocess.run(
-                [BASH, SEED_PULL, repo_url, channel, hostname, domain, timezone, password, headscale_url],
-                capture_output=True, text=True, timeout=3600,
-                env=ENV_WITH_PATH
-            )
-
-            for line in proc.stdout.splitlines():
-                send(line)
-            if proc.stderr:
-                for line in proc.stderr.splitlines():
-                    send("[stderr] %s" % line)
-
-            if proc.returncode == 0:
-                send("")
-                send("Installation complete!")
-                send("The server will reboot in 10 seconds...")
-                subprocess.Popen([BASH, "-c", "sleep 10 && systemctl reboot -i || reboot -f"],
-                                 env=ENV_WITH_PATH)
-            else:
-                send("Installation failed with exit code %d" % proc.returncode)
-        except Exception as e:
-            send("ERROR: %s" % e)
+    def _json_response(self, data, status=200):
+        body = json.dumps(data).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
 
 if __name__ == "__main__":
     print("OpenOS Seed Panel running on port %d" % PORT)
     print("Open http://%s/ in your browser" % get_ip())
-    print("Bash: %s" % BASH)
-    print("Seed pull: %s" % SEED_PULL)
     server = http.server.HTTPServer(("0.0.0.0", PORT), SeedHandler)
     server.serve_forever()
