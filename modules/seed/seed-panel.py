@@ -18,15 +18,29 @@ import json
 import os
 import subprocess
 import socket
-import html
-import urllib.parse
+import shutil
 
 PORT = 80
 STATE_DIR = "/var/lib/openos-seed"
 FLAKE_DIR = "/etc/openos/flake"
-REPO_URL = "https://github.com/openos-project/openos-server.git"
+REPO_URL = "https://github.com/fritte-MOOD/OpenOS-Server.git"
 
 os.makedirs(STATE_DIR, exist_ok=True)
+
+def find_bash():
+    """Find bash binary - NixOS puts it in the Nix store, not /bin/bash"""
+    candidates = [
+        "/run/current-system/sw/bin/bash",
+        shutil.which("bash"),
+        "/bin/bash",
+        "/usr/bin/bash",
+    ]
+    for path in candidates:
+        if path and os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    return "bash"
+
+BASH = find_bash()
 
 
 def get_ip():
@@ -67,6 +81,7 @@ def get_system_info():
 
     info["ip"] = get_ip()
     info["hostname"] = socket.gethostname()
+    info["bash"] = BASH
     return info
 
 
@@ -100,9 +115,11 @@ SETUP_HTML = """<!DOCTYPE html>
   input:focus, select:focus { outline: none; border-color: #f97316; }
   button { padding: 0.7rem 1.5rem; background: #f97316; color: #000; border: none;
            border-radius: 6px; font-size: 1rem; font-weight: 600; cursor: pointer;
-           width: 100%; }
+           width: 100%; margin-bottom: 0.5rem; }
   button:hover { background: #fb923c; }
   button:disabled { background: #555; color: #888; cursor: not-allowed; }
+  .btn-secondary { background: #333; color: #fff; }
+  .btn-secondary:hover { background: #444; }
   .log { background: #000; border: 1px solid #333; border-radius: 4px;
          padding: 0.8rem; font-family: monospace; font-size: 0.8rem;
          max-height: 300px; overflow-y: auto; white-space: pre-wrap;
@@ -112,6 +129,14 @@ SETUP_HTML = """<!DOCTYPE html>
   .status.ok { background: #052e16; color: #22c55e; }
   .status.err { background: #2d0a0a; color: #ef4444; }
   .status.working { background: #1a1000; color: #f97316; }
+  .terminal { display: none; margin-top: 1rem; }
+  .terminal-input { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
+  .terminal-input input { flex: 1; margin-bottom: 0; }
+  .terminal-input button { width: auto; padding: 0.6rem 1rem; }
+  .terminal-output { background: #000; border: 1px solid #333; border-radius: 4px;
+                     padding: 0.8rem; font-family: monospace; font-size: 0.85rem;
+                     min-height: 200px; max-height: 400px; overflow-y: auto;
+                     white-space: pre-wrap; color: #0f0; }
 </style>
 </head>
 <body>
@@ -148,7 +173,7 @@ SETUP_HTML = """<!DOCTYPE html>
     <div class="step" id="step3">
       <h2>3. OpenOS Version</h2>
       <label>Repository</label>
-      <input name="repo_url" value="https://github.com/openos-project/openos-server.git">
+      <input name="repo_url" value="https://github.com/fritte-MOOD/OpenOS-Server.git">
       <label>Channel</label>
       <select name="channel">
         <option value="stable" selected>Stable (recommended)</option>
@@ -158,10 +183,20 @@ SETUP_HTML = """<!DOCTYPE html>
     </div>
 
     <button type="submit" id="installBtn">Install OpenOS</button>
+    <button type="button" class="btn-secondary" onclick="toggleTerminal()">Open Terminal</button>
   </form>
 
   <div class="log" id="log"></div>
   <div class="status" id="status" style="display:none;"></div>
+
+  <div class="terminal" id="terminal">
+    <h2 style="color:#fff;margin-bottom:0.5rem;">Terminal</h2>
+    <div class="terminal-output" id="termOutput">$ </div>
+    <div class="terminal-input">
+      <input type="text" id="termCmd" placeholder="Enter command..." onkeypress="if(event.key==='Enter')runCmd()">
+      <button onclick="runCmd()">Run</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -170,6 +205,34 @@ fetch('/api/info').then(r=>r.json()).then(d=>{
   document.getElementById('arch').textContent=d.arch||'?';
   document.getElementById('memory').textContent=(d.memory_gb||'?')+' GB';
 });
+
+function toggleTerminal() {
+  const t = document.getElementById('terminal');
+  t.style.display = t.style.display === 'none' ? 'block' : 'none';
+}
+
+async function runCmd() {
+  const input = document.getElementById('termCmd');
+  const output = document.getElementById('termOutput');
+  const cmd = input.value.trim();
+  if (!cmd) return;
+  input.value = '';
+  output.textContent += cmd + '\\n';
+  try {
+    const res = await fetch('/api/exec', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({cmd: cmd})
+    });
+    const data = await res.json();
+    if (data.stdout) output.textContent += data.stdout;
+    if (data.stderr) output.textContent += data.stderr;
+    output.textContent += '$ ';
+    output.scrollTop = output.scrollHeight;
+  } catch(e) {
+    output.textContent += 'Error: ' + e.message + '\\n$ ';
+  }
+}
 
 document.getElementById('setupForm').addEventListener('submit', async(e)=>{
   e.preventDefault();
@@ -268,6 +331,34 @@ class SeedHandler(http.server.BaseHTTPRequestHandler):
 
             self.wfile.write(b"0\r\n\r\n")
             self.wfile.flush()
+
+        elif self.path == "/api/exec":
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length)) if length else {}
+            cmd = body.get("cmd", "")
+
+            result = {"stdout": "", "stderr": "", "code": 0}
+            try:
+                proc = subprocess.run(
+                    [BASH, "-c", cmd],
+                    capture_output=True, text=True, timeout=30,
+                    cwd="/root"
+                )
+                result["stdout"] = proc.stdout
+                result["stderr"] = proc.stderr
+                result["code"] = proc.returncode
+            except subprocess.TimeoutExpired:
+                result["stderr"] = "Command timed out (30s limit)\n"
+                result["code"] = -1
+            except Exception as e:
+                result["stderr"] = f"Error: {e}\n"
+                result["code"] = -1
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(result).encode())
+
         else:
             self.send_error(404)
 
@@ -284,32 +375,41 @@ class SeedHandler(http.server.BaseHTTPRequestHandler):
         send(f"Hostname: {hostname}")
         send(f"Domain: {domain}")
         send(f"Channel: {channel}")
+        send(f"Using bash: {BASH}")
         send("")
 
         send("Pulling OpenOS from GitHub...")
-        proc = subprocess.run(
-            ["bash", "/etc/openos/seed-pull.sh",
-             repo_url, channel, hostname, domain, timezone, password, headscale_url],
-            capture_output=True, text=True, timeout=1800
-        )
+        try:
+            proc = subprocess.run(
+                [BASH, "/etc/openos/seed-pull.sh",
+                 repo_url, channel, hostname, domain, timezone, password, headscale_url],
+                capture_output=True, text=True, timeout=1800
+            )
 
-        for line in proc.stdout.splitlines():
-            send(line)
-        if proc.stderr:
-            for line in proc.stderr.splitlines():
-                send(f"[stderr] {line}")
+            for line in proc.stdout.splitlines():
+                send(line)
+            if proc.stderr:
+                for line in proc.stderr.splitlines():
+                    send(f"[stderr] {line}")
 
-        if proc.returncode == 0:
-            send("")
-            send("Installation complete!")
-            send("The server will reboot in 10 seconds...")
-            subprocess.Popen(["bash", "-c", "sleep 10 && reboot"])
-        else:
-            send(f"Installation failed with exit code {proc.returncode}")
+            if proc.returncode == 0:
+                send("")
+                send("Installation complete!")
+                send("The server will reboot in 10 seconds...")
+                subprocess.Popen([BASH, "-c", "sleep 10 && systemctl reboot -i || reboot -f"])
+            else:
+                send(f"Installation failed with exit code {proc.returncode}")
+        except FileNotFoundError as e:
+            send(f"ERROR: Could not find bash at {BASH}")
+            send(f"Exception: {e}")
+            send("Try using the terminal below to debug.")
+        except Exception as e:
+            send(f"ERROR: {e}")
 
 
 if __name__ == "__main__":
     print(f"OpenOS Seed Panel running on port {PORT}")
     print(f"Open http://{get_ip()}/ in your browser")
+    print(f"Using bash: {BASH}")
     server = http.server.HTTPServer(("0.0.0.0", PORT), SeedHandler)
     server.serve_forever()
