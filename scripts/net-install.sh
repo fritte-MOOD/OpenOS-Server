@@ -96,6 +96,19 @@ while [ -z "$DISK" ]; do
   ask "Disk to install to (e.g. sda, nvme0n1)" DISK
   if [ -z "$DISK" ]; then
     warn "No disk entered. Please try again."
+    continue
+  fi
+
+  LIVE_ROOT=$(findmnt -n -o SOURCE / 2>/dev/null | sed 's/[0-9]*$//' | sed 's/p$//' | xargs basename 2>/dev/null) || true
+  if [ -n "$LIVE_ROOT" ] && [ "$DISK" = "$LIVE_ROOT" ]; then
+    warn "That looks like the disk you booted from (the USB stick)!"
+    warn "You probably want a different disk. Check the list above."
+    USB_CONFIRM=""
+    ask "Are you SURE you want to install to $DISK? (y/N)" USB_CONFIRM "N"
+    if [ "$USB_CONFIRM" != "y" ] && [ "$USB_CONFIRM" != "Y" ]; then
+      DISK=""
+      continue
+    fi
   fi
 done
 
@@ -116,6 +129,36 @@ ask "Type 'yes' to continue" CONFIRM
 [ "$CONFIRM" = "yes" ] || err "Aborted."
 
 # ─────────────────────────────────────────────
+# Clean up disk before partitioning
+# ─────────────────────────────────────────────
+step "Preparing disk"
+
+log "Unmounting any active partitions on $DISK_PATH..."
+for part in $(lsblk -ln -o NAME "$DISK_PATH" 2>/dev/null | tail -n +2); do
+  if mountpoint -q "/dev/$part" 2>/dev/null || grep -q "/dev/$part" /proc/mounts 2>/dev/null; then
+    log "  Unmounting /dev/$part..."
+    umount -f "/dev/$part" 2>/dev/null || true
+  fi
+done
+
+for mp in /mnt/boot /mnt/data /mnt; do
+  if mountpoint -q "$mp" 2>/dev/null; then
+    umount -f "$mp" 2>/dev/null || true
+  fi
+done
+
+swapoff "${DISK_PATH}"* 2>/dev/null || true
+
+for part in $(lsblk -ln -o NAME "$DISK_PATH" 2>/dev/null | tail -n +2); do
+  dmsetup remove "/dev/$part" 2>/dev/null || true
+done
+
+log "Wiping old partition signatures..."
+wipefs -a -f "$DISK_PATH" 2>/dev/null || true
+partprobe "$DISK_PATH" 2>/dev/null || true
+sleep 1
+
+# ─────────────────────────────────────────────
 # Partitioning
 # ─────────────────────────────────────────────
 step "Partitioning"
@@ -134,9 +177,21 @@ parted -s "$DISK_PATH" -- \
   mkpart primary ext4 1GiB 33GiB \
   mkpart primary ext4 33GiB 100%
 
+partprobe "$DISK_PATH" 2>/dev/null || true
+sleep 2
+
 BOOT_PART="${PART_PREFIX}1"
 ROOT_PART="${PART_PREFIX}2"
 DATA_PART="${PART_PREFIX}3"
+
+WAIT_TRIES=0
+while [ ! -b "$ROOT_PART" ] && [ "$WAIT_TRIES" -lt 10 ]; do
+  log "Waiting for partition devices to appear..."
+  sleep 1
+  WAIT_TRIES=$((WAIT_TRIES + 1))
+done
+
+[ -b "$ROOT_PART" ] || err "Partition devices did not appear. Try rebooting and running again."
 
 mkfs.fat -F 32 -n boot "$BOOT_PART"
 mkfs.ext4 -L nixos -F "$ROOT_PART"

@@ -118,6 +118,20 @@ while [ -z "$DISK" ]; do
   ask "Enter the disk to install to (e.g. sda, nvme0n1)" DISK
   if [ -z "$DISK" ]; then
     warn "No disk entered. Please try again."
+    continue
+  fi
+
+  # Catch if user accidentally picked the live USB they booted from
+  LIVE_ROOT=$(findmnt -n -o SOURCE / 2>/dev/null | sed 's/[0-9]*$//' | sed 's/p$//' | xargs basename 2>/dev/null) || true
+  if [ -n "$LIVE_ROOT" ] && [ "$DISK" = "$LIVE_ROOT" ]; then
+    warn "That looks like the disk you booted from (the USB stick)!"
+    warn "You probably want a different disk. Check the list above."
+    USB_CONFIRM=""
+    ask "Are you SURE you want to install to $DISK? (y/N)" USB_CONFIRM "N"
+    if [ "$USB_CONFIRM" != "y" ] && [ "$USB_CONFIRM" != "Y" ]; then
+      DISK=""
+      continue
+    fi
   fi
 done
 
@@ -142,6 +156,43 @@ ask "Type 'yes' to continue" CONFIRM
 [ "$CONFIRM" = "yes" ] || err "Aborted."
 
 # ─────────────────────────────────────────────
+# Clean up disk before partitioning
+# ─────────────────────────────────────────────
+step "Preparing disk"
+
+# Unmount any existing partitions on this disk
+log "Unmounting any active partitions on $DISK_PATH..."
+for part in $(lsblk -ln -o NAME "$DISK_PATH" 2>/dev/null | tail -n +2); do
+  if mountpoint -q "/dev/$part" 2>/dev/null || grep -q "/dev/$part" /proc/mounts 2>/dev/null; then
+    log "  Unmounting /dev/$part..."
+    umount -f "/dev/$part" 2>/dev/null || true
+  fi
+done
+
+# Also unmount /mnt in case a previous run left it mounted
+for mp in /mnt/boot /mnt/data /mnt; do
+  if mountpoint -q "$mp" 2>/dev/null; then
+    umount -f "$mp" 2>/dev/null || true
+  fi
+done
+
+# Deactivate any swap on this disk
+swapoff "${DISK_PATH}"* 2>/dev/null || true
+
+# Close any LUKS/LVM/md on this disk
+for part in $(lsblk -ln -o NAME "$DISK_PATH" 2>/dev/null | tail -n +2); do
+  dmsetup remove "/dev/$part" 2>/dev/null || true
+done
+
+# Wipe existing partition signatures so the kernel doesn't hold stale state
+log "Wiping old partition signatures..."
+wipefs -a -f "$DISK_PATH" 2>/dev/null || true
+
+# Force kernel to re-read the (now empty) partition table
+partprobe "$DISK_PATH" 2>/dev/null || true
+sleep 1
+
+# ─────────────────────────────────────────────
 # Partitioning
 # ─────────────────────────────────────────────
 step "Partitioning"
@@ -161,9 +212,25 @@ parted -s "$DISK_PATH" -- \
   mkpart primary ext4 1GiB 33GiB \
   mkpart primary ext4 33GiB 100%
 
+# Force kernel to pick up new partitions
+partprobe "$DISK_PATH" 2>/dev/null || true
+sleep 2
+
+# Wait for partition device nodes to appear
 BOOT_PART="${PART_PREFIX}1"
 ROOT_PART="${PART_PREFIX}2"
 DATA_PART="${PART_PREFIX}3"
+
+WAIT_TRIES=0
+while [ ! -b "$ROOT_PART" ] && [ "$WAIT_TRIES" -lt 10 ]; do
+  log "Waiting for partition devices to appear..."
+  sleep 1
+  WAIT_TRIES=$((WAIT_TRIES + 1))
+done
+
+if [ ! -b "$ROOT_PART" ]; then
+  err "Partition devices did not appear after partitioning. Try rebooting and running the installer again."
+fi
 
 log "Formatting partitions..."
 mkfs.fat -F 32 -n boot "$BOOT_PART"
