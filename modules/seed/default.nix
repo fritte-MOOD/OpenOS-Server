@@ -190,14 +190,13 @@ in {
     wants = [ "network-online.target" ];
     wantedBy = [ "multi-user.target" ];
 
-    path = with pkgs; [ bash git coreutils gnugrep gawk util-linux mkpasswd ];
-
     environment = {
       OPENOS_BASH = "${pkgs.bash}/bin/bash";
       OPENOS_SEED_PULL = "${seedPullScript}";
       OPENOS_REPO_URL = "https://github.com/fritte-MOOD/OpenOS-Server.git";
-      PATH = "/run/current-system/sw/bin:/run/wrappers/bin";
     };
+
+    path = with pkgs; [ bash git coreutils gnugrep gawk util-linux mkpasswd ];
 
     serviceConfig = {
       Type = "simple";
