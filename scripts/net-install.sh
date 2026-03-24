@@ -263,4 +263,4 @@ echo -e "  ${BOLD}2.${NC} Open browser:  ${BLUE}http://<server-ip>${NC}"
 echo -e "  ${BOLD}3.${NC} Complete setup in the admin panel"
 echo ""
 read -rp "Press Enter to reboot..." < "$TTY_IN" || true
-reboot
+systemctl reboot -i || reboot -f

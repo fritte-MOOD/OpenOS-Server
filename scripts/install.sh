@@ -341,4 +341,4 @@ echo ""
 log "Full install log: /tmp/openos-install.log"
 echo ""
 read -rp "Press Enter to reboot (or Ctrl+C to stay in the live environment)..." < "$TTY_IN" || true
-reboot
+systemctl reboot -i || reboot -f
