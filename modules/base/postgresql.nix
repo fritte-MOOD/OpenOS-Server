@@ -39,14 +39,18 @@ in {
       log_disconnections = true;
     };
 
-    # Core databases — apps add their own via ensureDatabases
-    ensureDatabases = [ "openos" ];
+    ensureDatabases = [ "openos" "openos-api" ];
     ensureUsers = [
       {
         name = "openos-api";
         ensureDBOwnership = true;
       }
     ];
+
+    # Grant openos-api full access to the openos database
+    initialScript = pkgs.writeText "pg-init.sql" ''
+      GRANT ALL PRIVILEGES ON DATABASE openos TO "openos-api";
+    '';
   };
 
   # PostgreSQL backup integration
