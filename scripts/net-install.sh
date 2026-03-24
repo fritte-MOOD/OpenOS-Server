@@ -5,10 +5,10 @@
 # Installs OpenOS directly from the internet without needing the
 # flake on the USB stick. Requires a NixOS live USB with internet.
 #
-# Usage: curl -sL https://raw.githubusercontent.com/openos-project/openos-server/main/scripts/net-install.sh | sudo bash
+# Usage: curl -sL https://raw.githubusercontent.com/fritte-MOOD/OpenOS-Server/main/scripts/net-install.sh | sudo bash
 #   or:  sudo bash net-install.sh
 # ──────────────────────────────────────────────────────────────────
-set -euo pipefail
+set -eo pipefail
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -21,6 +21,24 @@ log()  { echo -e "${GREEN}[OpenOS]${NC} $*"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 err()  { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 step() { echo -e "\n${BLUE}${BOLD}── $* ──${NC}"; }
+
+# When piped through curl|bash, stdin is the download stream.
+# Redirect interactive reads to the real terminal.
+if [ -t 0 ]; then
+  TTY_IN="/dev/stdin"
+else
+  TTY_IN="/dev/tty"
+fi
+
+ask() {
+  local prompt="$1" varname="$2" default="${3:-}"
+  if [ -n "$default" ]; then
+    read -rp "$prompt [$default]: " "$varname" < "$TTY_IN" || true
+    eval "$varname=\${$varname:-$default}"
+  else
+    read -rp "$prompt: " "$varname" < "$TTY_IN" || true
+  fi
+}
 
 clear
 echo -e "${BLUE}"
@@ -49,6 +67,7 @@ command -v nixos-install &>/dev/null || err "nixos-install not found. Boot into 
 command -v git &>/dev/null || nix-env -iA nixos.git
 
 ARCH=$(uname -m)
+FLAKE_TARGET=""
 case "$ARCH" in
   x86_64)  FLAKE_TARGET="openos-seed" ;;
   aarch64) FLAKE_TARGET="openos-seed-arm" ;;
@@ -64,15 +83,22 @@ fi
 log "Internet: OK"
 
 # ─────────────────────────────────────────────
-# Disk selection (same as USB installer)
+# Disk selection
 # ─────────────────────────────────────────────
 step "Disk selection"
 
 echo ""
-lsblk -d -o NAME,SIZE,MODEL,TYPE | grep -E "disk"
+lsblk -d -o NAME,SIZE,MODEL,TYPE | grep -E "disk" || true
 echo ""
 
-read -rp "Disk to install to (e.g. sda, nvme0n1): " DISK
+DISK=""
+while [ -z "$DISK" ]; do
+  ask "Disk to install to (e.g. sda, nvme0n1)" DISK
+  if [ -z "$DISK" ]; then
+    warn "No disk entered. Please try again."
+  fi
+done
+
 DISK_PATH="/dev/$DISK"
 
 [ -b "$DISK_PATH" ] || err "Disk $DISK_PATH not found."
@@ -85,7 +111,8 @@ log "Selected: $DISK_PATH ($DISK_SIZE_GB GB)"
 
 echo ""
 echo -e "${RED}${BOLD}WARNING: This will ERASE ALL DATA on $DISK_PATH${NC}"
-read -rp "Type 'yes' to continue: " CONFIRM
+CONFIRM=""
+ask "Type 'yes' to continue" CONFIRM
 [ "$CONFIRM" = "yes" ] || err "Aborted."
 
 # ─────────────────────────────────────────────
@@ -93,6 +120,7 @@ read -rp "Type 'yes' to continue: " CONFIRM
 # ─────────────────────────────────────────────
 step "Partitioning"
 
+PART_PREFIX=""
 if [[ "$DISK" == nvme* ]] || [[ "$DISK" == mmcblk* ]]; then
   PART_PREFIX="${DISK_PATH}p"
 else
@@ -135,7 +163,7 @@ step "Downloading OpenOS from GitHub"
 OPENOS_DIR="/mnt/etc/openos"
 mkdir -p "$OPENOS_DIR"
 
-REPO_URL="https://github.com/openos-project/openos-server.git"
+REPO_URL="https://github.com/fritte-MOOD/OpenOS-Server.git"
 log "Cloning $REPO_URL ..."
 git clone "$REPO_URL" "$OPENOS_DIR/flake" 2>&1
 
@@ -179,5 +207,5 @@ echo -e "  ${BOLD}1.${NC} Reboot:  ${BLUE}reboot${NC}"
 echo -e "  ${BOLD}2.${NC} Open browser:  ${BLUE}http://<server-ip>${NC}"
 echo -e "  ${BOLD}3.${NC} Complete setup in the admin panel"
 echo ""
-read -rp "Press Enter to reboot..."
+read -rp "Press Enter to reboot..." < "$TTY_IN" || true
 reboot
