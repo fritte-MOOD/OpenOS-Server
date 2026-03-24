@@ -81,7 +81,7 @@
     fsType = "ext4";
   };
   fileSystems."/boot" = lib.mkDefault {
-    device = "/dev/disk/by-label/boot";
+    device = "/dev/disk/by-label/BOOT";
     fsType = "vfat";
     options = [ "fmask=0077" "dmask=0077" ];
   };

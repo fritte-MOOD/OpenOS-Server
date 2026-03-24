@@ -193,7 +193,7 @@ done
 
 [ -b "$ROOT_PART" ] || err "Partition devices did not appear. Try rebooting and running again."
 
-mkfs.fat -F 32 -n boot "$BOOT_PART"
+mkfs.fat -F 32 -n BOOT "$BOOT_PART"
 mkfs.ext4 -L nixos -F "$ROOT_PART"
 mkfs.ext4 -L data -F "$DATA_PART"
 

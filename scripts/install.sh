@@ -233,7 +233,7 @@ if [ ! -b "$ROOT_PART" ]; then
 fi
 
 log "Formatting partitions..."
-mkfs.fat -F 32 -n boot "$BOOT_PART"
+mkfs.fat -F 32 -n BOOT "$BOOT_PART"
 mkfs.ext4 -L nixos -F "$ROOT_PART"
 mkfs.ext4 -L data -F "$DATA_PART"
 

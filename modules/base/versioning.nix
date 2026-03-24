@@ -7,17 +7,9 @@
     configurationLimit = 20;
   };
 
-  # ── Generation metadata ──
-  # Every nixos-rebuild writes a label so the API and boot menu show
-  # human-readable version strings instead of bare generation numbers.
-  system.nixos.label =
-    let
-      # Read version from /etc/openos/version if it exists at build time,
-      # otherwise fall back to the flake's lastModifiedDate.
-      versionFile = /etc/openos/version;
-      fallback = config.system.nixos.release;
-    in
-      lib.mkDefault fallback;
+  # Let NixOS set system.nixos.label automatically.
+  # The OpenOS version is tracked separately in /etc/openos/version,
+  # which the API reads at runtime — no need to override the NixOS label.
 
   # ── Automatic rollback on failed health check ──
   # After every upgrade (manual or automatic) we run a health check.
