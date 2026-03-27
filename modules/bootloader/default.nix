@@ -88,9 +88,9 @@ in {
     };
   };
 
-  # First-boot detection: if /etc/openos/configured doesn't exist,
-  # the admin panel runs in setup mode
-  environment.etc."openos/mode".text = lib.mkDefault "full";
+  # Mode and version are tracked in /var/lib/openos/ (writable at runtime).
+  # First-boot detection: if /var/lib/openos/configured doesn't exist,
+  # the admin panel runs in setup mode.
 
   # SSH always available — password login enabled for first-boot access
   services.openssh = {
@@ -180,7 +180,7 @@ in {
       ${pkgs.grub2}/bin/grub-set-default "$((GEN - 1))"
 
       VERSION=$(${pkgs.coreutils}/bin/cat "$STATE_DIR/pending-version" 2>/dev/null || echo "unknown")
-      echo "$VERSION" > /etc/openos/version
+      echo "$VERSION" > /var/lib/openos/version
 
       ${pkgs.coreutils}/bin/rm -f "$STATE_DIR/pending-generation" \
         "$STATE_DIR/pending-version" \

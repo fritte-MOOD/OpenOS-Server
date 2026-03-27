@@ -44,23 +44,20 @@ func (h *SystemHandler) Status(w http.ResponseWriter, r *http.Request) {
 }
 
 func readVersionFile() string {
-	data, err := os.ReadFile("/etc/openos/version")
-	if err != nil {
-		return "0.1.0-dev"
+	for _, p := range []string{"/var/lib/openos/version", "/etc/openos/version"} {
+		data, err := os.ReadFile(p)
+		if err == nil {
+			return strings.TrimSpace(string(data))
+		}
 	}
-	return strings.TrimSpace(string(data))
+	return "0.1.0-dev"
 }
 
 func readModeFile() string {
-	data, err := os.ReadFile("/etc/openos/mode")
-	if err != nil {
+	if _, err := os.Stat("/var/lib/openos/configured"); err == nil {
 		return "full"
 	}
-	mode := strings.TrimSpace(string(data))
-	if mode == "" {
-		return "full"
-	}
-	return mode
+	return "setup"
 }
 
 func (h *SystemHandler) Resources(w http.ResponseWriter, r *http.Request) {

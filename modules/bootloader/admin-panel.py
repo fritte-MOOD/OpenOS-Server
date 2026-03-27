@@ -44,7 +44,7 @@ def get_ip():
 
 
 def is_setup_mode():
-    return not os.path.exists("/etc/openos/configured")
+    return not os.path.exists("/var/lib/openos/configured")
 
 
 def get_system_info():
@@ -68,10 +68,14 @@ def get_system_info():
     except Exception:
         info["disks"] = []
     info["setup_mode"] = is_setup_mode()
-    try:
-        with open("/etc/openos/version") as f:
-            info["version"] = f.read().strip()
-    except Exception:
+    for vpath in ["/var/lib/openos/version", "/etc/openos/version"]:
+        try:
+            with open(vpath) as f:
+                info["version"] = f.read().strip()
+                break
+        except Exception:
+            pass
+    if "version" not in info:
         info["version"] = "unknown"
     return info
 
@@ -288,11 +292,12 @@ def run_setup(config):
         log("")
         log("Build successful! Marking as configured...")
 
-        with open("/etc/openos/configured", "w") as f:
+        os.makedirs("/var/lib/openos", exist_ok=True)
+        with open("/var/lib/openos/configured", "w") as f:
             f.write(time.strftime("%Y-%m-%dT%H:%M:%S"))
 
         version = target if not target.startswith("origin/") else "main"
-        with open("/etc/openos/version", "w") as f:
+        with open("/var/lib/openos/version", "w") as f:
             f.write(version)
 
         log("")

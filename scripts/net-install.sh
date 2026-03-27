@@ -190,7 +190,8 @@ cat > "$OPENOS_DIR/apps.nix" << 'EOF'
 }
 EOF
 
-echo "0.1.0-dev" > "$OPENOS_DIR/version"
+mkdir -p /mnt/var/lib/openos
+echo "0.1.0-dev" > /mnt/var/lib/openos/version
 
 step "Installing OpenOS"
 

@@ -54,6 +54,6 @@
     '';
   };
 
-  # Version file — written by safe-update / setup
-  environment.etc."openos/version".text = lib.mkDefault "0.1.0-dev";
+  # Version is tracked at /var/lib/openos/version (writable at runtime).
+  # The installer writes the initial value there.
 }

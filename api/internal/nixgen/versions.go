@@ -216,9 +216,11 @@ func (g *Generator) GetUpgradeHistory() ([]models.UpgradeHistoryEntry, error) {
 }
 
 func (g *Generator) getCurrentVersion() string {
-	data, err := os.ReadFile("/etc/openos/version")
-	if err != nil {
-		return "unknown"
+	for _, p := range []string{"/var/lib/openos/version", "/etc/openos/version"} {
+		data, err := os.ReadFile(p)
+		if err == nil {
+			return strings.TrimSpace(string(data))
+		}
 	}
-	return strings.TrimSpace(string(data))
+	return "unknown"
 }

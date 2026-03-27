@@ -139,7 +139,7 @@ in {
           echo "$(date -Iseconds) Auto-applying update to $TARGET_REF via safe-update..." >> "$STATE_DIR/update.log"
 
           git checkout "$TARGET_REF" 2>> "$STATE_DIR/update.log"
-          echo "$TARGET_REF" > /etc/openos/version
+          echo "$TARGET_REF" > /var/lib/openos/version
 
           /etc/openos/safe-update.sh "$TARGET_REF" \
             2>&1 | tee -a "$STATE_DIR/update.log"
@@ -183,7 +183,7 @@ in {
 
         cd "$FLAKE_DIR"
         git checkout "$TARGET_REF"
-        echo "$TARGET_REF" > /etc/openos/version
+        echo "$TARGET_REF" > /var/lib/openos/version
         rm -f "$STAGED"
 
         exec /etc/openos/safe-update.sh "$TARGET_REF"
@@ -216,7 +216,7 @@ in {
 
         echo "Upgrading to $VERSION via safe-update..."
         git checkout "$VERSION"
-        echo "$VERSION" > /etc/openos/version
+        echo "$VERSION" > /var/lib/openos/version
 
         exec /etc/openos/safe-update.sh "$VERSION"
       '';
