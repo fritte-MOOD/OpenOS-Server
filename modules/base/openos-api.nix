@@ -54,13 +54,14 @@ in {
         { command = "/etc/openos/rollback-to.sh"; options = [ "NOPASSWD" ]; }
         { command = "/etc/openos/upgrade-to-version.sh"; options = [ "NOPASSWD" ]; }
         { command = "/etc/openos/apply-staged-update.sh"; options = [ "NOPASSWD" ]; }
+        { command = "/etc/openos/safe-update.sh"; options = [ "NOPASSWD" ]; }
+        { command = "/etc/openos/confirm-generation.sh"; options = [ "NOPASSWD" ]; }
         { command = "/run/current-system/sw/bin/systemctl start openos-update-check.service"; options = [ "NOPASSWD" ]; }
       ];
     }
   ];
 
-  # Ensure /etc/openos directory exists
   systemd.tmpfiles.rules = [
-    "d /etc/openos 0755 openos-api openos-api -"
+    "d /var/lib/openos-api 0755 openos-api openos-api -"
   ];
 }

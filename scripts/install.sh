@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────────────────────
-# OpenOS Server Installer — Phase 1: Seed Installation
+# OpenOS Server Installer
 #
-# This script runs from the OpenOS USB installer (or any NixOS live USB).
-# It installs the minimal "seed" system, which provides:
-#   - A web-based setup wizard (http://<server-ip>)
-#   - GRUB bootloader with rollback support
-#   - Networking (DHCP + Tailscale)
+# Installs the full OpenOS system with built-in bootloader.
+# After first boot, the admin panel runs in setup mode (http://<ip>)
+# to configure hostname, password, and Tailscale.
 #
-# After reboot, open the admin panel in your browser to pull the
-# full OpenOS version from GitHub (Phase 2).
+# Every generation includes the bootloader layer (Tailscale, SSH,
+# admin panel, watchdog). Even if an update breaks apps, the
+# bootloader stays running and the system auto-rolls back.
 #
 # Usage: sudo bash install.sh
-#   or:  curl -sL https://example.com/install.sh | sudo bash
+#   or:  curl -sL <url>/install.sh | sudo bash
 # ──────────────────────────────────────────────────────────────────
 set -eo pipefail
 
@@ -28,8 +27,6 @@ warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 err()  { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 step() { echo -e "\n${BLUE}${BOLD}── $* ──${NC}"; }
 
-# When piped through curl|bash, stdin is the download stream.
-# Redirect interactive reads to the real terminal.
 if [ -t 0 ]; then
   TTY_IN="/dev/stdin"
 else
@@ -46,9 +43,6 @@ ask() {
   fi
 }
 
-# ─────────────────────────────────────────────
-# Banner
-# ─────────────────────────────────────────────
 clear
 echo -e "${BLUE}"
 cat << 'BANNER'
@@ -58,17 +52,17 @@ cat << 'BANNER'
  | |_| | |_) |  __/ | | | |_| |___) |
   \___/| .__/ \___|_| |_|\___/|____/
        |_|
-  Community Server — Installer v0.2
+  Community Server — Installer v1.0
 BANNER
 echo -e "${NC}"
 echo ""
-log "This installer sets up the OpenOS seed system on this machine."
-log "After reboot, open the admin panel in your browser to complete setup."
+log "This installs OpenOS with a built-in bootloader."
+log "After reboot, open the admin panel in your browser to finish setup."
 echo ""
-echo -e "${YELLOW}Requirements:${NC}"
-echo "  - A NixOS live USB or the OpenOS installer ISO"
-echo "  - Internet access"
-echo "  - A disk to install to (will be erased!)"
+echo -e "${YELLOW}Features:${NC}"
+echo "  - Built-in bootloader: Tailscale + SSH + admin panel always running"
+echo "  - Safe updates: automatic rollback if an update breaks anything"
+echo "  - Remote management: always reachable via Tailscale, even after bad updates"
 echo ""
 
 # ─────────────────────────────────────────────
@@ -77,24 +71,24 @@ echo ""
 step "Pre-flight checks"
 
 if [ "$(id -u)" -ne 0 ]; then
-  err "This installer must be run as root. Try: sudo bash install.sh"
+  err "Must be run as root. Try: sudo bash install.sh"
 fi
 
 if ! command -v nixos-install &>/dev/null; then
-  err "nixos-install not found. Are you booted into a NixOS live environment?"
+  err "nixos-install not found. Are you in a NixOS live environment?"
 fi
 
 ARCH=$(uname -m)
 FLAKE_TARGET=""
 case "$ARCH" in
-  x86_64)  FLAKE_TARGET="openos-seed" ;;
-  aarch64) FLAKE_TARGET="openos-seed-arm" ;;
-  *)       err "Unsupported architecture: $ARCH. OpenOS supports x86_64 and aarch64." ;;
+  x86_64)  FLAKE_TARGET="openos" ;;
+  aarch64) FLAKE_TARGET="openos-arm" ;;
+  *)       err "Unsupported architecture: $ARCH" ;;
 esac
 log "Architecture: $ARCH (target: $FLAKE_TARGET)"
 
 if ! ping -c 1 -W 3 github.com &>/dev/null; then
-  warn "Cannot reach github.com. Make sure you have internet access."
+  warn "Cannot reach github.com."
   CONTINUE=""
   ask "Continue anyway? [y/N]" CONTINUE "N"
   [ "$CONTINUE" = "y" ] || [ "$CONTINUE" = "Y" ] || err "Aborted."
@@ -117,17 +111,15 @@ DISK=""
 while [ -z "$DISK" ]; do
   ask "Enter the disk to install to (e.g. sda, nvme0n1)" DISK
   if [ -z "$DISK" ]; then
-    warn "No disk entered. Please try again."
+    warn "No disk entered."
     continue
   fi
 
-  # Catch if user accidentally picked the live USB they booted from
   LIVE_ROOT=$(findmnt -n -o SOURCE / 2>/dev/null | sed 's/[0-9]*$//' | sed 's/p$//' | xargs basename 2>/dev/null) || true
   if [ -n "$LIVE_ROOT" ] && [ "$DISK" = "$LIVE_ROOT" ]; then
-    warn "That looks like the disk you booted from (the USB stick)!"
-    warn "You probably want a different disk. Check the list above."
+    warn "That looks like the USB stick you booted from!"
     USB_CONFIRM=""
-    ask "Are you SURE you want to install to $DISK? (y/N)" USB_CONFIRM "N"
+    ask "Are you SURE? (y/N)" USB_CONFIRM "N"
     if [ "$USB_CONFIRM" != "y" ] && [ "$USB_CONFIRM" != "Y" ]; then
       DISK=""
       continue
@@ -146,49 +138,40 @@ DISK_SIZE_GB=$((DISK_SIZE / 1024 / 1024 / 1024))
 log "Selected: $DISK_PATH ($DISK_SIZE_GB GB)"
 
 if [ "$DISK_SIZE_GB" -lt 16 ]; then
-  err "Disk too small. OpenOS requires at least 16 GB."
+  err "Disk too small. Minimum 16 GB."
 fi
 
 echo ""
-echo -e "${RED}${BOLD}WARNING: This will ERASE ALL DATA on $DISK_PATH${NC}"
+echo -e "${RED}${BOLD}WARNING: ALL DATA on $DISK_PATH will be ERASED${NC}"
 CONFIRM=""
 ask "Type 'yes' to continue" CONFIRM
 [ "$CONFIRM" = "yes" ] || err "Aborted."
 
 # ─────────────────────────────────────────────
-# Clean up disk before partitioning
+# Prepare disk
 # ─────────────────────────────────────────────
 step "Preparing disk"
 
-# Unmount any existing partitions on this disk
-log "Unmounting any active partitions on $DISK_PATH..."
+log "Unmounting existing partitions..."
 for part in $(lsblk -ln -o NAME "$DISK_PATH" 2>/dev/null | tail -n +2); do
   if mountpoint -q "/dev/$part" 2>/dev/null || grep -q "/dev/$part" /proc/mounts 2>/dev/null; then
-    log "  Unmounting /dev/$part..."
     umount -f "/dev/$part" 2>/dev/null || true
   fi
 done
 
-# Also unmount /mnt in case a previous run left it mounted
 for mp in /mnt/boot /mnt/data /mnt; do
   if mountpoint -q "$mp" 2>/dev/null; then
     umount -f "$mp" 2>/dev/null || true
   fi
 done
 
-# Deactivate any swap on this disk
 swapoff "${DISK_PATH}"* 2>/dev/null || true
 
-# Close any LUKS/LVM/md on this disk
 for part in $(lsblk -ln -o NAME "$DISK_PATH" 2>/dev/null | tail -n +2); do
   dmsetup remove "/dev/$part" 2>/dev/null || true
 done
 
-# Wipe existing partition signatures so the kernel doesn't hold stale state
-log "Wiping old partition signatures..."
 wipefs -a -f "$DISK_PATH" 2>/dev/null || true
-
-# Force kernel to re-read the (now empty) partition table
 partprobe "$DISK_PATH" 2>/dev/null || true
 sleep 1
 
@@ -212,27 +195,25 @@ parted -s "$DISK_PATH" -- \
   mkpart primary ext4 1GiB 33GiB \
   mkpart primary ext4 33GiB 100%
 
-# Force kernel to pick up new partitions
 partprobe "$DISK_PATH" 2>/dev/null || true
 sleep 2
 
-# Wait for partition device nodes to appear
 BOOT_PART="${PART_PREFIX}1"
 ROOT_PART="${PART_PREFIX}2"
 DATA_PART="${PART_PREFIX}3"
 
 WAIT_TRIES=0
 while [ ! -b "$ROOT_PART" ] && [ "$WAIT_TRIES" -lt 10 ]; do
-  log "Waiting for partition devices to appear..."
+  log "Waiting for partition devices..."
   sleep 1
   WAIT_TRIES=$((WAIT_TRIES + 1))
 done
 
 if [ ! -b "$ROOT_PART" ]; then
-  err "Partition devices did not appear after partitioning. Try rebooting and running the installer again."
+  err "Partition devices did not appear. Try rebooting the installer."
 fi
 
-log "Formatting partitions..."
+log "Formatting..."
 mkfs.fat -F 32 -n BOOT "$BOOT_PART"
 mkfs.ext4 -L nixos -F "$ROOT_PART"
 mkfs.ext4 -L data -F "$DATA_PART"
@@ -240,7 +221,7 @@ mkfs.ext4 -L data -F "$DATA_PART"
 log "Partitioning complete."
 
 # ─────────────────────────────────────────────
-# Mounting
+# Mount
 # ─────────────────────────────────────────────
 step "Mounting filesystems"
 
@@ -251,10 +232,10 @@ mount "$DATA_PART" /mnt/data
 
 mkdir -p /mnt/data/{postgres,shared,apps,backups/{daily,weekly}}
 
-log "Filesystems mounted."
+log "Mounted."
 
 # ─────────────────────────────────────────────
-# Clone OpenOS flake
+# Clone OpenOS
 # ─────────────────────────────────────────────
 step "Downloading OpenOS"
 
@@ -263,21 +244,19 @@ mkdir -p "$OPENOS_DIR"
 
 REPO_URL="https://github.com/fritte-MOOD/OpenOS-Server.git"
 
-log "Cloning OpenOS repository..."
+log "Cloning repository..."
 if git clone "$REPO_URL" "$OPENOS_DIR/flake" 2>&1; then
-  log "Repository cloned successfully."
+  log "Repository cloned."
 else
   warn "Could not clone from GitHub."
   if [ -d "/etc/openos-installer/flake" ]; then
-    log "Copying flake from installer media..."
+    log "Copying from installer media..."
     cp -r /etc/openos-installer/flake "$OPENOS_DIR/flake"
   elif ls -d /run/media/*/openos-flake &>/dev/null; then
-    log "Found flake on USB drive..."
+    log "Found on USB..."
     cp -r /run/media/*/openos-flake "$OPENOS_DIR/flake"
   else
-    warn "No flake source found. Creating minimal placeholder."
-    warn "You'll need to provide the flake manually after first boot."
-    mkdir -p "$OPENOS_DIR/flake"
+    err "No flake source available. Internet required."
   fi
 fi
 
@@ -290,21 +269,20 @@ if [ -f /mnt/etc/nixos/hardware-configuration.nix ]; then
 fi
 
 cat > "$OPENOS_DIR/apps.nix" << 'EOF'
-# Auto-generated by openos-api. Do not edit manually.
 {
 }
 EOF
 
-echo "seed" > "$OPENOS_DIR/mode"
-echo "seed-0.1.0" > "$OPENOS_DIR/version"
+echo "0.1.0-dev" > "$OPENOS_DIR/version"
 
 # ─────────────────────────────────────────────
-# Install NixOS (seed system)
+# Install
 # ─────────────────────────────────────────────
-step "Installing seed system"
+step "Installing OpenOS"
 
-log "This installs the minimal OpenOS seed (bootloader + admin panel)."
-log "The full system will be pulled from GitHub after first boot."
+log "Installing the full system with built-in bootloader."
+log "This includes: Tailscale, SSH, admin panel, watchdog, PostgreSQL, Nginx, and all apps."
+log "First boot will show the setup wizard at http://<server-ip>/"
 echo ""
 
 nixos-install \
@@ -316,7 +294,7 @@ nixos-install \
 INSTALL_EXIT=${PIPESTATUS[0]}
 
 if [ "$INSTALL_EXIT" -ne 0 ]; then
-  err "Installation failed. Check /tmp/openos-install.log for details."
+  err "Installation failed. See /tmp/openos-install.log"
 fi
 
 # ─────────────────────────────────────────────
@@ -324,21 +302,20 @@ fi
 # ─────────────────────────────────────────────
 echo ""
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${GREEN}  OpenOS Seed installed successfully!${NC}"
+echo -e "${GREEN}  OpenOS installed successfully!${NC}"
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 log "What happens next:"
 echo ""
 echo -e "  ${BOLD}1.${NC} Remove the USB stick"
-echo -e "  ${BOLD}2.${NC} Reboot:  ${BLUE}reboot${NC}"
-echo -e "  ${BOLD}3.${NC} Wait for the server to boot (1-2 minutes)"
-echo -e "  ${BOLD}4.${NC} Open a browser and go to:  ${BLUE}http://<server-ip>${NC}"
-echo -e "  ${BOLD}5.${NC} The setup wizard will guide you through the rest"
+echo -e "  ${BOLD}2.${NC} Reboot"
+echo -e "  ${BOLD}3.${NC} Open ${BLUE}http://<server-ip>${NC} in your browser"
+echo -e "  ${BOLD}4.${NC} Complete setup (hostname, password, Tailscale)"
 echo ""
-echo -e "  The server's IP will be shown on the console after boot."
-echo -e "  You can also find it with: ${BLUE}ip addr${NC}"
+echo -e "  The admin panel is ${BOLD}always running${NC} — even after updates."
+echo -e "  If an update breaks something, the system auto-rolls back."
 echo ""
-log "Full install log: /tmp/openos-install.log"
+log "Install log: /tmp/openos-install.log"
 echo ""
-read -rp "Press Enter to reboot (or Ctrl+C to stay in the live environment)..." < "$TTY_IN" || true
+read -rp "Press Enter to reboot..." < "$TTY_IN" || true
 systemctl reboot -i || reboot -f

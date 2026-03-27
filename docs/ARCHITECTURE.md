@@ -1,4 +1,4 @@
-# OpenOS Server -- Architecture
+# OpenOS Server — Architecture
 
 ## Overview
 
@@ -7,7 +7,7 @@ OpenOS Server is a NixOS-based, self-administering community server OS. It provi
 - **Shared infrastructure** for communities (housing co-ops, clubs, NGOs, etc.)
 - **One-click app installation** via a Go API daemon
 - **Secure networking** via Tailscale/Headscale
-- **Data sovereignty** -- all data stays on your hardware
+- **Data sovereignty** — all data stays on your hardware
 
 ## System Layers
 
@@ -20,23 +20,25 @@ OpenOS Server is a NixOS-based, self-administering community server OS. It provi
 └──────────────────┬──────────────────────────┘
                    │ REST API over Tailscale
 ┌──────────────────▼──────────────────────────┐
-│  openos-api (Go daemon)                     │
-│  - App install/uninstall/status             │
-│  - System monitoring (CPU, RAM, GPU, disk)  │
-│  - User & community management             │
-│  - Nix config generation + rebuild trigger  │
-└──────────────────┬──────────────────────────┘
-                   │ nixos-rebuild switch
-┌──────────────────▼──────────────────────────┐
-│  NixOS                                      │
+│  Bootloader Layer (always running)          │
+│  ┌────────────┐ ┌─────────┐ ┌───────────┐  │
+│  │ Tailscale  │ │ SSH     │ │ Admin     │  │
+│  │ (remote)   │ │ (shell) │ │ Panel     │  │
+│  └────────────┘ └─────────┘ └───────────┘  │
+│  ┌────────────────────────────────────────┐ │
+│  │ Watchdog (auto-rollback on failure)    │ │
+│  └────────────────────────────────────────┘ │
+├─────────────────────────────────────────────┤
+│  Application Layer                          │
+│  ┌────────────┐ ┌──────────┐ ┌───────────┐ │
+│  │ openos-api │ │ Nginx    │ │PostgreSQL │ │
+│  │ (Go)       │ │ (proxy)  │ │ (shared)  │ │
+│  └────────────┘ └──────────┘ └───────────┘ │
 │  ┌─────────────┐ ┌──────────┐ ┌──────────┐ │
-│  │ PostgreSQL   │ │ Nginx    │ │Tailscale │ │
+│  │ Nextcloud   │ │ Ollama   │ │Syncthing │ │
 │  └─────────────┘ └──────────┘ └──────────┘ │
 │  ┌─────────────┐ ┌──────────┐ ┌──────────┐ │
-│  │ Nextcloud    │ │ Ollama   │ │Syncthing │ │
-│  └─────────────┘ └──────────┘ └──────────┘ │
-│  ┌─────────────┐ ┌──────────┐ ┌──────────┐ │
-│  │ Jellyfin     │ │ Gitea    │ │HedgeDoc  │ │
+│  │ Jellyfin    │ │ Gitea    │ │HedgeDoc  │ │
 │  └─────────────┘ └──────────┘ └──────────┘ │
 └─────────────────────────────────────────────┘
                    │
@@ -48,6 +50,47 @@ OpenOS Server is a NixOS-based, self-administering community server OS. It provi
 │  └── backups/     (daily + weekly)          │
 └─────────────────────────────────────────────┘
 ```
+
+## Built-in Bootloader
+
+The bootloader is a set of systemd services that start **before** the application layer. They are part of every NixOS generation and cannot be disabled.
+
+### Service Ordering
+
+```
+openos-bootloader.target (starts first)
+├── tailscaled.service     — remote access
+├── sshd.service           — shell access
+├── openos-admin-panel     — web UI (port 80)
+└── openos-watchdog        — health monitor
+
+multi-user.target (starts after)
+├── postgresql.service
+├── nginx.service
+├── openos-api.service
+└── app services...
+```
+
+If any application-layer service crashes, the bootloader layer keeps running. You always have remote access.
+
+### Safe Update Flow
+
+1. Admin clicks "Update" in the admin panel (or API call)
+2. `nixos-rebuild boot` stages a new NixOS generation (does NOT activate it)
+3. `grub-reboot <N>` tells GRUB to boot the new generation **once**
+4. System reboots
+5. Watchdog checks every 30s: Tailscale connected? Admin panel up? SSH reachable?
+6. **Healthy for 2 minutes** → `grub-set-default <N>` confirms the generation
+7. **Unhealthy after 2 minutes** → system reboots → GRUB falls back to the previous default
+
+### First Boot
+
+On first boot (no `/etc/openos/configured` file), the admin panel shows a **setup wizard**:
+- Hostname, domain, timezone, admin password
+- Headscale URL for Tailscale
+- Version channel (stable/beta/nightly)
+
+After setup, the system builds the configured generation and reboots.
 
 ## Key Principles
 
@@ -67,25 +110,23 @@ OpenOS Server is a NixOS-based, self-administering community server OS. It provi
    The Go API toggles `openos.apps.<name>.enable = true` and rebuilds.
 
 6. **Safe versioning**: Every system change creates a NixOS generation.
-   The admin can roll back to any previous generation via the API or GRUB boot menu.
-   Updates follow release channels (stable/beta/nightly) and can be staged for review.
+   Updates use GRUB one-time boot and automatic rollback. Even a completely
+   broken update is reverted within minutes without manual intervention.
 
 ## Versioning & Update System
 
-OpenOS uses NixOS generations as its versioning backbone. Every `nixos-rebuild switch`
-creates a new generation that is independently bootable.
+OpenOS uses NixOS generations as its versioning backbone.
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│  GRUB Boot Menu (Recovery Layer)                    │
-│  ├── Generation 42 (current) — v1.2.0              │
-│  ├── Generation 41 — v1.1.0                        │
-│  ├── Generation 40 — v1.1.0-rc2                    │
-│  └── ... (up to 20 generations)                     │
-│                                                     │
-│  If the system fails to boot or health check fails, │
-│  select a previous generation from this menu.       │
-│  No SSH, no terminal, no API needed.                │
+│  GRUB Boot Menu (saved-default + one-time boot)     │
+│  ├── Generation 42 (current default) — v1.2.0       │
+│  ├── Generation 41 — v1.1.0                         │
+│  ├── Generation 40 — v1.1.0-rc2                     │
+│  └── ... (up to 30 generations)                      │
+│                                                      │
+│  GRUB remembers the last confirmed-good generation.  │
+│  One-time boots auto-fallback on failure.            │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -99,20 +140,20 @@ creates a new generation that is independently bootable.
 
 ### Update Flow
 
-1. **Check**: Timer runs daily (or admin clicks "Check for Updates" in the UI)
-2. **Stage**: If an update is available, it is downloaded and staged
-3. **Review**: Admin sees "Update available: v1.2.0" in the Server View
-4. **Apply**: Admin clicks "Apply Update" (or auto-apply if configured)
-5. **Health Check**: After reboot, critical services are verified
-6. **Auto-Rollback**: If 2+ critical services fail, the system rolls back automatically
+1. **Check**: Timer runs daily (or admin clicks "Check for Updates")
+2. **Stage**: If update available, it's downloaded and staged
+3. **Review**: Admin sees "Update available: v1.2.0" in admin panel
+4. **Apply**: Admin clicks "Apply Update" → `nixos-rebuild boot` + `grub-reboot`
+5. **Reboot**: System reboots into new generation (one-time)
+6. **Verify**: Watchdog checks Tailscale, admin panel, SSH
+7. **Confirm or Rollback**: Auto-confirmed if healthy, auto-reverted if not
 
-### Rollback
+### Rollback Levels
 
-Three levels of rollback safety:
-
-- **API rollback**: `POST /api/v1/system/rollback` with a generation number
-- **GRUB rollback**: Select a previous generation from the boot menu (physical/IPMI access)
-- **Automatic rollback**: Health check fails after upgrade, system rolls back and reboots
+- **Admin panel**: Click "Activate" on any previous generation
+- **API rollback**: `POST /api/v1/system/rollback` with generation number
+- **GRUB boot menu**: Select a previous generation (physical/IPMI access)
+- **Automatic**: Watchdog reverts failed updates within minutes
 
 ## Repository Structure
 
@@ -121,12 +162,13 @@ flake.nix                    Entry point
 hosts/default/               Generic host config
 modules/
   base/                      Core: networking, security, storage, PostgreSQL, Nginx
+  bootloader/                Built-in bootloader: admin panel, watchdog, GRUB management
   apps/                      App modules: Nextcloud, Ollama, Syncthing, ...
   network/                   Tailscale client + optional Headscale server
 api/                         Go API daemon source
-scripts/                     Installer + setup helpers
+scripts/                     Installer scripts
 secrets/                     agenix encrypted secrets
-docs/                        This documentation
+docs/                        Documentation
 ```
 
 ## API Endpoints
@@ -154,14 +196,14 @@ docs/                        This documentation
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | /api/v1/system/versions | List available versions (filterable by channel) |
-| GET | /api/v1/system/generations | List NixOS generations (bootable snapshots) |
-| GET | /api/v1/system/update-status | Current version, latest available, staged update |
-| POST | /api/v1/system/check-updates | Trigger an update check now |
-| POST | /api/v1/system/upgrade | Upgrade to a specific version `{"version":"v1.2.0"}` |
-| POST | /api/v1/system/apply-staged | Apply a previously staged update |
-| POST | /api/v1/system/rollback | Roll back to a generation `{"generation":41}` |
-| GET | /api/v1/system/upgrade-history | List past upgrades with timestamps |
+| GET | /api/v1/system/versions | List available versions |
+| GET | /api/v1/system/generations | List NixOS generations |
+| GET | /api/v1/system/update-status | Current + latest version |
+| POST | /api/v1/system/check-updates | Trigger update check |
+| POST | /api/v1/system/upgrade | Safe-update to version `{"version":"v1.2.0"}` |
+| POST | /api/v1/system/apply-staged | Apply staged update |
+| POST | /api/v1/system/rollback | Rollback `{"generation":41}` |
+| GET | /api/v1/system/upgrade-history | Past upgrades |
 
 ### Communities & Users
 

@@ -1,85 +1,13 @@
 { config, lib, pkgs, ... }:
 {
-  # ── Boot Menu with Generation Selection ──
-  # GRUB shows all NixOS generations so the admin can pick a known-good
-  # version from the physical console or IPMI without SSH access.
-  boot.loader.grub = {
-    configurationLimit = 20;
-  };
+  # GRUB saved-default is configured in modules/bootloader/default.nix.
+  # This module provides helper scripts for the Go API and admin panel.
 
-  # Let NixOS set system.nixos.label automatically.
-  # The OpenOS version is tracked separately in /etc/openos/version,
-  # which the API reads at runtime — no need to override the NixOS label.
-
-  # ── Automatic rollback on failed health check ──
-  # After every upgrade (manual or automatic) we run a health check.
-  # If critical services are down, we automatically roll back.
-  systemd.services.openos-auto-rollback = {
-    description = "OpenOS automatic rollback on health-check failure";
-    after = [ "multi-user.target" ];
-    wantedBy = [ "multi-user.target" ];
-
-    # Only run once per boot, 90 seconds after reaching multi-user
-    # (gives services time to start)
-    serviceConfig = {
-      Type = "oneshot";
-      RemainAfterExit = true;
-    };
-
-    script = ''
-      sleep 90
-
-      MARKER="/var/lib/openos-api/upgrade-pending"
-      if [ ! -f "$MARKER" ]; then
-        exit 0
-      fi
-
-      echo "Upgrade marker found — running post-upgrade health check..."
-
-      SERVICES=(
-        "postgresql.service"
-        "nginx.service"
-        "tailscaled.service"
-        "openos-api.service"
-      )
-
-      FAILED=0
-      for svc in "''${SERVICES[@]}"; do
-        if ! ${pkgs.systemd}/bin/systemctl is-active --quiet "$svc" 2>/dev/null; then
-          echo "CRITICAL: $svc is not running after upgrade"
-          FAILED=$((FAILED + 1))
-        fi
-      done
-
-      if [ "$FAILED" -ge 2 ]; then
-        echo "ROLLBACK: $FAILED critical services failed. Rolling back..."
-
-        # Record the failed generation before rolling back
-        CURRENT_GEN=$(${pkgs.nix}/bin/nix-env --list-generations --profile /nix/var/nix/profiles/system | tail -1 | ${pkgs.gawk}/bin/awk '{print $1}')
-        echo "$CURRENT_GEN" >> /var/lib/openos-api/failed-generations
-
-        ${pkgs.coreutils}/bin/rm -f "$MARKER"
-        /run/current-system/sw/bin/nixos-rebuild switch --rollback
-        echo "Rolled back successfully. Rebooting..."
-        ${pkgs.systemd}/bin/systemctl reboot
-      else
-        echo "Health check passed ($FAILED warnings). Upgrade confirmed."
-        ${pkgs.coreutils}/bin/rm -f "$MARKER"
-
-        # Record successful generation
-        CURRENT_GEN=$(${pkgs.nix}/bin/nix-env --list-generations --profile /nix/var/nix/profiles/system | tail -1 | ${pkgs.gawk}/bin/awk '{print $1}')
-        echo "$(date -Iseconds) gen=$CURRENT_GEN status=ok" >> /var/lib/openos-api/upgrade-history
-      fi
-    '';
-  };
-
-  # ── Generation listing helper ──
-  # A script the Go API calls to get structured generation data
+  # Generation listing — JSON output for the API
   environment.etc."openos/list-generations.sh" = {
     mode = "0755";
     text = ''
       #!/usr/bin/env bash
-      # Outputs JSON array of NixOS generations
       set -euo pipefail
 
       ${pkgs.nix}/bin/nix-env --list-generations --profile /nix/var/nix/profiles/system \
@@ -97,12 +25,11 @@
     '';
   };
 
-  # ── Rollback helper ──
+  # Rollback to a specific generation
   environment.etc."openos/rollback-to.sh" = {
     mode = "0755";
     text = ''
       #!/usr/bin/env bash
-      # Usage: rollback-to.sh <generation-number>
       set -euo pipefail
 
       GEN="''${1:-}"
@@ -127,12 +54,6 @@
     '';
   };
 
-  # ── Version file ──
-  # Written by the upgrade process so the API can report the current version
+  # Version file — written by safe-update / setup
   environment.etc."openos/version".text = lib.mkDefault "0.1.0-dev";
-
-  # Ensure state directories exist
-  systemd.tmpfiles.rules = [
-    "d /var/lib/openos-api 0755 openos-api openos-api -"
-  ];
 }

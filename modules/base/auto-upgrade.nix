@@ -136,25 +136,15 @@ in {
         STATUSEOF
 
         if [ "${lib.boolToString cfg.autoApply}" = "true" ]; then
-          echo "$(date -Iseconds) Auto-applying update to $TARGET_REF..." >> "$STATE_DIR/update.log"
+          echo "$(date -Iseconds) Auto-applying update to $TARGET_REF via safe-update..." >> "$STATE_DIR/update.log"
 
           git checkout "$TARGET_REF" 2>> "$STATE_DIR/update.log"
-
-          # Write version file
           echo "$TARGET_REF" > /etc/openos/version
 
-          # Set upgrade marker for the health-check rollback system
-          echo "$TARGET_REF" > "$STATE_DIR/upgrade-pending"
-
-          # Rebuild
-          nixos-rebuild switch \
-            --flake "$FLAKE_DIR#openos" \
-            --impure \
-            --no-write-lock-file \
+          /etc/openos/safe-update.sh "$TARGET_REF" \
             2>&1 | tee -a "$STATE_DIR/update.log"
 
-          echo "$(date -Iseconds) Upgrade to $TARGET_REF complete." >> "$STATE_DIR/update.log"
-          echo "$(date -Iseconds) gen=$(nix-env --list-generations --profile /nix/var/nix/profiles/system | tail -1 | awk '{print $1}') version=$TARGET_REF status=applied" >> "$STATE_DIR/upgrade-history"
+          echo "$(date -Iseconds) Safe-update to $TARGET_REF initiated (will reboot)." >> "$STATE_DIR/update.log"
         else
           echo "$(date -Iseconds) Update staged. Waiting for admin confirmation." >> "$STATE_DIR/update.log"
           echo "$TARGET_REF" > "$STATE_DIR/staged-update"
@@ -189,25 +179,14 @@ in {
         fi
 
         TARGET_REF=$(cat "$STAGED")
-        echo "Applying staged update: $TARGET_REF"
+        echo "Applying staged update via safe-update: $TARGET_REF"
 
         cd "$FLAKE_DIR"
         git checkout "$TARGET_REF"
-
         echo "$TARGET_REF" > /etc/openos/version
-        echo "$TARGET_REF" > "$STATE_DIR/upgrade-pending"
-
-        nixos-rebuild switch \
-          --flake "$FLAKE_DIR#openos" \
-          --impure \
-          --no-write-lock-file \
-          2>&1
-
         rm -f "$STAGED"
 
-        CURRENT_GEN=$(nix-env --list-generations --profile /nix/var/nix/profiles/system | tail -1 | awk '{print $1}')
-        echo "{\"success\":true,\"version\":\"$TARGET_REF\",\"generation\":$CURRENT_GEN}"
-        echo "$(date -Iseconds) gen=$CURRENT_GEN version=$TARGET_REF status=applied" >> "$STATE_DIR/upgrade-history"
+        exec /etc/openos/safe-update.sh "$TARGET_REF"
       '';
     };
 
@@ -235,21 +214,11 @@ in {
           exit 1
         fi
 
-        echo "Upgrading to $VERSION..."
+        echo "Upgrading to $VERSION via safe-update..."
         git checkout "$VERSION"
-
         echo "$VERSION" > /etc/openos/version
-        echo "$VERSION" > "$STATE_DIR/upgrade-pending"
 
-        nixos-rebuild switch \
-          --flake "$FLAKE_DIR#openos" \
-          --impure \
-          --no-write-lock-file \
-          2>&1
-
-        CURRENT_GEN=$(nix-env --list-generations --profile /nix/var/nix/profiles/system | tail -1 | awk '{print $1}')
-        echo "{\"success\":true,\"version\":\"$VERSION\",\"generation\":$CURRENT_GEN}"
-        echo "$(date -Iseconds) gen=$CURRENT_GEN version=$VERSION status=applied" >> "$STATE_DIR/upgrade-history"
+        exec /etc/openos/safe-update.sh "$VERSION"
       '';
     };
 

@@ -19,22 +19,52 @@ OpenOS makes it easy to run a private community server — file sharing, chat, v
 2. Boot the server from USB
 3. Follow the on-screen prompts (select disk, confirm)
 4. Reboot → open `http://<server-ip>` in your browser
-5. Complete setup in the web wizard (hostname, password, version)
+5. Complete setup (hostname, password, Tailscale)
 6. Done. Your server is running.
 
-See **[docs/USB-INSTALL-GUIDE.md](docs/USB-INSTALL-GUIDE.md)** for the full step-by-step guide.
+See **[docs/USB-INSTALL-GUIDE.md](docs/USB-INSTALL-GUIDE.md)** for the full guide.
 
 ## How It Works
 
-OpenOS uses a two-phase installation:
+OpenOS installs the full system in one step. Every installation includes a **built-in bootloader layer** that is always running, even if an update breaks other services:
 
-**Phase 1 — Seed (USB installer):**
-A minimal system with just a bootloader, SSH, and a web-based setup panel. This is your safety net — you can always boot into the seed.
+```
+┌─────────────────────────────────────────────────┐
+│  GRUB Boot Menu                                 │
+│  ├── Generation 3 (current)                     │
+│  ├── Generation 2 (previous)                    │
+│  └── Generation 1 (initial install)             │
+│  Auto-fallback if new generation fails          │
+└─────────────────────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────────────────┐
+│  Bootloader Layer (always running)              │
+│  ├── Tailscale (remote access)                  │
+│  ├── SSH                                        │
+│  ├── Admin Panel (http://<ip>)                  │
+│  └── Watchdog (auto-rollback)                   │
+└─────────────────────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────────────────┐
+│  Application Layer                              │
+│  ├── PostgreSQL, Nginx, Go API                  │
+│  ├── Nextcloud, Ollama, Jellyfin, ...           │
+│  └── /data (persistent, survives reinstalls)    │
+└─────────────────────────────────────────────────┘
+```
 
-**Phase 2 — Full System (pulled from GitHub):**
-The setup wizard pulls the selected OpenOS version from this repository, builds the full NixOS system, and reboots into it.
+### Safe Updates
 
-After installation, updates and rollbacks happen through the admin API — no SSH or command line needed.
+1. Click "Update" in the admin panel
+2. System builds a new generation without switching to it
+3. Reboots with GRUB one-time boot into the new generation
+4. Watchdog checks: Tailscale connected? Admin panel reachable?
+5. **Pass** → new generation becomes default
+6. **Fail** → automatic reboot → GRUB falls back to previous generation
+
+You can never brick the server remotely. Even a completely broken update is automatically reverted within 5 minutes.
 
 ## Architecture
 
@@ -67,8 +97,9 @@ After installation, updates and rollbacks happen through the admin API — no SS
 
 ## Key Features
 
-- **One-click app installation** — Nextcloud, Ollama, Jellyfin, Gitea, and more
-- **Automatic rollback** — failed upgrades are reverted automatically
+- **Built-in bootloader** — Tailscale, SSH, admin panel always running
+- **Safe updates** — automatic rollback via GRUB on failure
+- **One-click apps** — Nextcloud, Ollama, Jellyfin, Gitea, and more
 - **Version channels** — stable, beta, nightly
 - **Data separation** — OS and data on separate partitions
 - **Multi-community** — connect to multiple servers via Tailscale
@@ -76,8 +107,8 @@ After installation, updates and rollbacks happen through the admin API — no SS
 
 ## Documentation
 
-- [USB Installation Guide](docs/USB-INSTALL-GUIDE.md) — step-by-step with pictures
-- [Full Installation Reference](docs/INSTALL.md) — all installation methods
+- [USB Installation Guide](docs/USB-INSTALL-GUIDE.md) — step-by-step
+- [Full Installation Reference](docs/INSTALL.md) — all methods
 - [Architecture](docs/ARCHITECTURE.md) — system design and API reference
 - [App Development](docs/APP_DEVELOPMENT.md) — build your own OpenOS apps
 

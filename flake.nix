@@ -24,7 +24,6 @@
       config.allowUnfree = true;
     };
 
-    # Full OpenOS server with all apps
     mkHost = system: hostname: { extraModules ? [], hardwareModules ? [] }:
       nixpkgs.lib.nixosSystem {
         inherit system;
@@ -36,29 +35,11 @@
         modules = [
           ./hosts/${hostname}/default.nix
           ./modules/base
+          ./modules/bootloader
           ./modules/network/tailscale.nix
           agenix.nixosModules.default
         ] ++ hardwareModules ++ extraModules;
       };
-
-    # Minimal seed system: just enough to boot, show admin panel, and pull a version
-    mkSeed = system: nixpkgs.lib.nixosSystem {
-      inherit system;
-      specialArgs = {
-        inherit inputs;
-        pkgsUnstable = mkPkgsUnstable system;
-        hostname = "openos-seed";
-      };
-      modules = [
-        ./hosts/default/hardware-generic.nix
-        ./modules/base/options.nix
-        ./modules/base/networking.nix
-        ./modules/base/users.nix
-        ./modules/base/versioning.nix
-        ./modules/network/tailscale.nix
-        ./modules/seed
-      ];
-    };
 
     appModules = [
       ./modules/apps/registry.nix
@@ -73,24 +54,15 @@
 
   in {
     nixosConfigurations = {
-      # Full server (x86_64)
       openos = mkHost "x86_64-linux" "default" {
         extraModules = appModules;
       };
 
-      # Full server (aarch64 — Raspberry Pi 4/5, Ampere, etc.)
       openos-arm = mkHost "aarch64-linux" "default" {
         extraModules = appModules;
       };
-
-      # Seed system — minimal bootloader + admin panel (x86_64)
-      openos-seed = mkSeed "x86_64-linux";
-
-      # Seed system (aarch64)
-      openos-seed-arm = mkSeed "aarch64-linux";
     };
 
-    # Installer ISO images
     packages = forAllSystems (system:
     let
       pkgs = nixpkgs.legacyPackages.${system};
@@ -102,7 +74,6 @@
         vendorHash = null;
       };
 
-      # Build a custom installer ISO:  nix build .#installer-iso
       installer-iso = (nixpkgs.lib.nixosSystem {
         inherit system;
         modules = [
@@ -116,7 +87,6 @@
               curl jq vim
             ];
 
-            # Auto-start the installer on login
             environment.etc."profile.local".text = ''
               if [ "$(tty)" = "/dev/tty1" ] && [ -z "$OPENOS_INSTALLER_RUNNING" ]; then
                 export OPENOS_INSTALLER_RUNNING=1
@@ -125,14 +95,14 @@
                 echo "==================================="
                 echo ""
                 echo "  1) Install OpenOS (interactive)"
-                echo "  2) Install OpenOS (from network, no USB data needed)"
+                echo "  2) Install OpenOS (from network)"
                 echo "  3) Drop to shell"
                 echo ""
                 read -rp "Choice [1]: " choice
                 case "''${choice:-1}" in
                   1) sudo bash /etc/openos-installer/install.sh ;;
                   2) sudo bash /etc/openos-installer/net-install.sh ;;
-                  3) echo "Type 'bash /etc/openos-installer/install.sh' to start the installer." ;;
+                  3) echo "Type 'bash /etc/openos-installer/install.sh' to start." ;;
                 esac
               fi
             '';

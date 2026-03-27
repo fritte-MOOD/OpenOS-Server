@@ -33,7 +33,7 @@ type SystemStatus struct {
 	Uptime    int64  `json:"uptimeSeconds"`
 	OS        string `json:"os"`
 	Healthy   bool   `json:"healthy"`
-	Mode      string `json:"mode"` // "seed" or "full"
+	Mode      string `json:"mode"` // "setup" (first boot) or "full"
 }
 
 type SystemResources struct {
