@@ -351,7 +351,7 @@ input:focus,select:focus{outline:none;border-color:#f97316}
 <label>Admin Password</label><input name="password" type="password" required minlength="8">
 </div>
 <div class="step"><h2>2. Tailscale</h2>
-<label>Headscale Server URL</label><input name="headscale_url" placeholder="https://hs.example.com">
+<label>Headscale Server URL</label><input name="headscale_url" value="https://tuktuk.redirectme.net">
 <p style="color:#666;font-size:.8rem">Leave empty to configure later.</p>
 </div>
 <div class="step"><h2>3. Version</h2>

@@ -28,6 +28,39 @@ in {
     before = [ "openos-bootloader.target" ];
   };
 
+  # Auto-enroll with Headscale on first boot
+  systemd.services.openos-tailscale-enroll = {
+    description = "OpenOS Tailscale auto-enrollment";
+    after = [ "tailscaled.service" "network-online.target" ];
+    wants = [ "tailscaled.service" "network-online.target" ];
+    wantedBy = [ "multi-user.target" ];
+
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+    };
+
+    path = [ pkgs.tailscale ];
+
+    script = ''
+      HEADSCALE_URL="https://tuktuk.redirectme.net"
+      AUTH_KEY="392a03b59e97095f589541a5fa8a96fc207198c2ee5556bf"
+
+      if tailscale status &>/dev/null 2>&1; then
+        echo "Tailscale already connected."
+        exit 0
+      fi
+
+      echo "Auto-enrolling with Headscale at $HEADSCALE_URL ..."
+      tailscale up \
+        --login-server="$HEADSCALE_URL" \
+        --authkey="$AUTH_KEY" \
+        --accept-dns \
+        --accept-routes \
+        --timeout=60s || echo "Auto-enrollment failed. Configure manually via admin panel."
+    '';
+  };
+
   # Admin panel: lightweight Python web UI for version management
   systemd.services.openos-admin-panel = {
     description = "OpenOS Admin Panel";
