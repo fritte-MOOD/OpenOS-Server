@@ -10,6 +10,7 @@ Two modes:
 import http.server
 import json
 import os
+import re
 import subprocess
 import socket
 import threading
@@ -21,6 +22,8 @@ REPO_URL = os.environ.get("OPENOS_REPO_URL", "https://github.com/fritte-MOOD/Ope
 BASH = os.environ.get("OPENOS_BASH", "/run/current-system/sw/bin/bash")
 STATE_DIR = "/var/lib/openos"
 NIXOS_PATH = "/run/current-system/sw/bin"
+APPS_NIX = "/etc/openos/apps.nix"
+REGISTRY_JSON = "/etc/openos/registry.json"
 
 os.makedirs(STATE_DIR, exist_ok=True)
 
@@ -126,6 +129,185 @@ def get_health():
         except Exception:
             pass
     return {"services": services, "pending_generation": pending}
+
+
+ICON_MAP = {
+    "tv": "&#x1F4FA;", "cloud": "&#x2601;", "brain": "&#x1F9E0;",
+    "sync": "&#x1F504;", "lock": "&#x1F512;", "git": "&#x1F33F;",
+    "doc": "&#x1F4DD;", "files": "&#x1F4C1;", "music": "&#x1F3B5;",
+}
+
+
+def get_enabled_apps():
+    """Parse /etc/openos/apps.nix and return set of enabled app names."""
+    enabled = set()
+    try:
+        with open(APPS_NIX) as f:
+            for line in f:
+                m = re.search(r'openos\.apps\.(\w+)\.enable\s*=\s*true', line)
+                if m:
+                    enabled.add(m.group(1))
+    except FileNotFoundError:
+        pass
+    return enabled
+
+
+def write_apps_nix(enabled_set):
+    """Write /etc/openos/apps.nix from a set of app names."""
+    lines = ["{\n"]
+    for app in sorted(enabled_set):
+        lines.append("  openos.apps.%s.enable = true;\n" % app)
+    lines.append("}\n")
+    with open(APPS_NIX, "w") as f:
+        f.writelines(lines)
+
+
+def get_apps():
+    """Return list of apps with metadata and enabled status."""
+    enabled = get_enabled_apps()
+    apps = []
+    try:
+        with open(REGISTRY_JSON) as f:
+            registry = json.loads(f.read())
+    except Exception:
+        registry = {}
+
+    hardcoded = {
+        "jellyfin": {"name": "Jellyfin", "description": "Stream movies, music, and shows", "icon": "tv", "category": "media", "ports": [8096]},
+        "nextcloud": {"name": "Nextcloud", "description": "File sync and collaboration", "icon": "cloud", "category": "files", "ports": [443]},
+        "ollama": {"name": "Ollama + Open WebUI", "description": "Run local LLMs on your server", "icon": "brain", "category": "ai", "ports": [11434, 3000]},
+        "syncthing": {"name": "Syncthing", "description": "Continuous file synchronization", "icon": "sync", "category": "files", "ports": [8384]},
+        "vaultwarden": {"name": "Vaultwarden", "description": "Password manager (Bitwarden compatible)", "icon": "lock", "category": "security", "ports": [8222]},
+        "gitea": {"name": "Gitea", "description": "Self-hosted Git service", "icon": "git", "category": "development", "ports": [3000]},
+        "hedgedoc": {"name": "HedgeDoc", "description": "Collaborative markdown editor", "icon": "doc", "category": "tools", "ports": [3000]},
+    }
+
+    seen = set()
+    for key, meta in registry.items():
+        seen.add(key)
+        apps.append({
+            "id": key,
+            "name": meta.get("name", key),
+            "description": meta.get("description", ""),
+            "icon": meta.get("icon", ""),
+            "category": meta.get("category", "tools"),
+            "ports": meta.get("ports", []),
+            "enabled": key in enabled,
+        })
+
+    for key, meta in hardcoded.items():
+        if key not in seen:
+            apps.append({
+                "id": key,
+                "name": meta["name"],
+                "description": meta["description"],
+                "icon": meta["icon"],
+                "category": meta["category"],
+                "ports": meta["ports"],
+                "enabled": key in enabled,
+            })
+
+    apps.sort(key=lambda a: (0 if a["enabled"] else 1, a["name"]))
+    return apps
+
+
+def install_app(app_id):
+    """Enable an app and trigger rebuild."""
+    global task_log, task_running, task_done, task_name
+    task_log = []
+    task_running = True
+    task_done = False
+    task_name = "Install %s" % app_id
+
+    def log(msg):
+        task_log.append(msg)
+
+    log("=== Installing %s ===" % app_id)
+
+    try:
+        enabled = get_enabled_apps()
+        enabled.add(app_id)
+        write_apps_nix(enabled)
+        log("Updated apps.nix: %s" % ", ".join(sorted(enabled)))
+        log("")
+        log("Building system... (this may take several minutes)")
+
+        arch_r = subprocess.run(["uname", "-m"], capture_output=True, text=True, env=ENV_WITH_PATH)
+        arch = arch_r.stdout.strip()
+        flake_target = "openos" if arch == "x86_64" else "openos-arm"
+
+        proc = subprocess.Popen(
+            [BASH, "-c",
+             "nixos-rebuild switch --flake %s#%s --impure 2>&1" % (FLAKE_DIR, flake_target)],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1, env=ENV_WITH_PATH
+        )
+        for line in iter(proc.stdout.readline, ""):
+            log(line.rstrip())
+        proc.wait()
+
+        if proc.returncode == 0:
+            log("")
+            log("=== %s installed successfully ===" % app_id)
+        else:
+            log("")
+            log("=== Install FAILED (exit code %d) ===" % proc.returncode)
+            log("Rolling back apps.nix...")
+            enabled.discard(app_id)
+            write_apps_nix(enabled)
+    except Exception as e:
+        log("ERROR: %s" % e)
+
+    task_running = False
+    task_done = True
+
+
+def uninstall_app(app_id):
+    """Disable an app and trigger rebuild."""
+    global task_log, task_running, task_done, task_name
+    task_log = []
+    task_running = True
+    task_done = False
+    task_name = "Uninstall %s" % app_id
+
+    def log(msg):
+        task_log.append(msg)
+
+    log("=== Uninstalling %s ===" % app_id)
+
+    try:
+        enabled = get_enabled_apps()
+        enabled.discard(app_id)
+        write_apps_nix(enabled)
+        log("Updated apps.nix: %s" % (", ".join(sorted(enabled)) or "(none)"))
+        log("")
+        log("Rebuilding system...")
+
+        arch_r = subprocess.run(["uname", "-m"], capture_output=True, text=True, env=ENV_WITH_PATH)
+        arch = arch_r.stdout.strip()
+        flake_target = "openos" if arch == "x86_64" else "openos-arm"
+
+        proc = subprocess.Popen(
+            [BASH, "-c",
+             "nixos-rebuild switch --flake %s#%s --impure 2>&1" % (FLAKE_DIR, flake_target)],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1, env=ENV_WITH_PATH
+        )
+        for line in iter(proc.stdout.readline, ""):
+            log(line.rstrip())
+        proc.wait()
+
+        if proc.returncode == 0:
+            log("")
+            log("=== %s uninstalled successfully ===" % app_id)
+        else:
+            log("")
+            log("=== Uninstall FAILED (exit code %d) ===" % proc.returncode)
+    except Exception as e:
+        log("ERROR: %s" % e)
+
+    task_running = False
+    task_done = True
 
 
 def run_task_bg(name, cmd_args):
@@ -410,10 +592,14 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <title>OpenOS Admin</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0a0a0a;color:#e5e5e5;min-height:100vh;padding:2rem}
-.wrap{max-width:900px;margin:0 auto}
-h1{font-size:1.6rem;margin-bottom:.3rem;color:#fff}
-.sub{color:#888;margin-bottom:1.5rem}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0a0a0a;color:#e5e5e5;min-height:100vh}
+nav{background:#111;border-bottom:1px solid #333;padding:0 2rem;display:flex;align-items:center;height:56px;position:sticky;top:0;z-index:10}
+nav h1{font-size:1.1rem;color:#fff;margin-right:2rem}
+nav a{color:#888;text-decoration:none;padding:.5rem .8rem;font-size:.9rem;border-radius:4px;margin-right:.25rem}
+nav a:hover{color:#fff;background:#222}
+nav a.active{color:#f97316;background:#1a1000}
+.page{display:none;max-width:960px;margin:0 auto;padding:1.5rem 2rem}
+.page.show{display:block}
 .card{background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:1.2rem;margin-bottom:1rem}
 .card h2{font-size:1rem;color:#fff;margin-bottom:.8rem}
 .row{display:flex;justify-content:space-between;padding:.25rem 0}
@@ -428,34 +614,69 @@ td{padding:.4rem;border-bottom:1px solid #222}
 .btn-sm{padding:.3rem .7rem;font-size:.8rem}
 .btn-red{background:#ef4444;color:#fff}.btn-red:hover{background:#dc2626}
 .btn-gray{background:#333;color:#fff}.btn-gray:hover{background:#444}
-#log{background:#000;border:1px solid #333;border-radius:4px;padding:.8rem;font-family:monospace;font-size:.8rem;max-height:400px;overflow-y:auto;white-space:pre-wrap;color:#aaa;display:none;margin-top:.8rem}
 .actions{margin-top:.8rem;display:flex;flex-wrap:wrap;gap:.5rem}
 .badge{display:inline-block;padding:.15rem .5rem;border-radius:3px;font-size:.75rem;font-weight:600}
 .badge-ok{background:#052e16;color:#22c55e}.badge-fail{background:#2d0a0a;color:#ef4444}
 .badge-pending{background:#1a1000;color:#f97316}
+.app-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:.8rem}
+.app-card{background:#111;border:1px solid #2a2a2a;border-radius:8px;padding:1rem;display:flex;flex-direction:column;transition:border-color .2s}
+.app-card:hover{border-color:#444}
+.app-card.installed{border-color:#22c55e40}
+.app-top{display:flex;align-items:center;gap:.7rem;margin-bottom:.6rem}
+.app-icon{font-size:1.5rem;width:36px;text-align:center}
+.app-name{font-size:.95rem;font-weight:600;color:#fff}
+.app-cat{font-size:.7rem;color:#666;text-transform:uppercase;letter-spacing:.5px}
+.app-desc{font-size:.8rem;color:#999;flex:1;margin-bottom:.8rem;line-height:1.4}
+.app-bottom{display:flex;align-items:center;justify-content:space-between}
+.app-ports{font-size:.7rem;color:#555;font-family:monospace}
+.app-btn{padding:.4rem .9rem;border:none;border-radius:4px;font-size:.8rem;font-weight:600;cursor:pointer}
+.app-btn.install{background:#f97316;color:#000}
+.app-btn.install:hover{background:#fb923c}
+.app-btn.remove{background:#2a2a2a;color:#ef4444;border:1px solid #ef444440}
+.app-btn.remove:hover{background:#3a1a1a}
+.app-btn:disabled{background:#333;color:#666;cursor:not-allowed;border:none}
+#buildlog{background:#000;border:1px solid #333;border-radius:8px;padding:1rem;font-family:monospace;font-size:.8rem;max-height:400px;overflow-y:auto;white-space:pre-wrap;color:#aaa;display:none;margin-bottom:1rem}
+#buildstatus{text-align:center;padding:.6rem;border-radius:6px;font-size:.9rem;font-weight:600;display:none;margin-bottom:1rem}
+#buildstatus.working{background:#1a1000;color:#f97316}
+#buildstatus.success{background:#052e16;color:#22c55e}
+#buildstatus.error{background:#2d0a0a;color:#ef4444}
+.log-box{background:#000;border:1px solid #333;border-radius:4px;padding:.8rem;font-family:monospace;font-size:.8rem;max-height:400px;overflow-y:auto;white-space:pre-wrap;color:#aaa;display:none;margin-top:.8rem}
 </style></head><body>
-<div class="wrap">
-<h1>OpenOS Admin Panel</h1>
-<p class="sub" id="version">Loading...</p>
+<nav>
+<h1>OpenOS</h1>
+<a href="#dashboard" class="active" onclick="showPage('dashboard',this)">Dashboard</a>
+<a href="#apps" onclick="showPage('apps',this)">Apps</a>
+<a href="#system" onclick="showPage('system',this)">System</a>
+</nav>
 
-<div class="card" id="health-card"><h2>System Health</h2><div id="health">Loading...</div></div>
-
-<div class="card" id="ts-card"><h2>Tailscale</h2><div id="ts">Loading...</div>
+<div class="page show" id="p-dashboard">
+<p class="val" id="version" style="color:#888;margin-bottom:1rem;font-size:.85rem">Loading...</p>
+<div class="card"><h2>System Health</h2><div id="health">Loading...</div></div>
+<div class="card"><h2>Tailscale</h2><div id="ts">Loading...</div>
 <div class="actions"><button class="btn btn-sm btn-gray" onclick="setupTS()">Configure Tailscale</button></div></div>
+<div class="card"><h2>Installed Apps</h2><div id="installed-apps" style="color:#888;font-size:.9rem">Loading...</div></div>
+</div>
 
+<div class="page" id="p-apps">
+<div id="buildstatus"></div>
+<div id="buildlog"></div>
+<div class="app-grid" id="app-grid">
+<div style="color:#888">Loading apps...</div>
+</div>
+</div>
+
+<div class="page" id="p-system">
 <div class="card"><h2>NixOS Generations</h2>
 <table><thead><tr><th>#</th><th>Date</th><th>Status</th><th>Actions</th></tr></thead>
 <tbody id="gens"><tr><td colspan="4">Loading...</td></tr></tbody></table>
 </div>
-
 <div class="card"><h2>Update</h2>
 <div class="actions">
 <button class="btn" id="updateBtn" onclick="doUpdate()">Check for Updates</button>
 <button class="btn btn-gray" onclick="doFetch()">Fetch Latest</button>
 </div>
-<div id="log"></div>
+<div class="log-box" id="updatelog"></div>
 </div>
-
 <div class="card"><h2>Terminal</h2>
 <div style="background:#000;border:1px solid #333;border-radius:4px;padding:.8rem;font-family:monospace;font-size:.85rem;min-height:100px;max-height:250px;overflow-y:auto;white-space:pre-wrap;color:#0f0" id="term">$ </div>
 <div style="display:flex;gap:.5rem;margin-top:.5rem">
@@ -466,11 +687,22 @@ td{padding:.4rem;border-bottom:1px solid #222}
 
 <script>
 (function(){
-var logEl=document.getElementById('log'),timer=null;
+var icons={"tv":"\uD83D\uDCFA","cloud":"\u2601\uFE0F","brain":"\uD83E\uDDE0","sync":"\uD83D\uDD04","lock":"\uD83D\uDD12","git":"\uD83C\uDF3F","doc":"\uD83D\uDCDD","files":"\uD83D\uDCC1","music":"\uD83C\uDFB5"};
+var appTimer=null,curApps=[];
+
+window.showPage=function(id,el){
+var pages=document.querySelectorAll('.page');
+for(var i=0;i<pages.length;i++)pages[i].className='page';
+document.getElementById('p-'+id).className='page show';
+var links=document.querySelectorAll('nav a');
+for(var i=0;i<links.length;i++)links[i].className='';
+if(el)el.className='active';
+if(id==='apps')loadApps();
+};
 
 function load(){
 fetch('/api/info').then(function(r){return r.json()}).then(function(d){
-document.getElementById('version').textContent='Version: '+(d.version||'?')+' | '+d.hostname+' | '+d.arch+' | '+(d.memory_gb||'?')+' GB RAM';
+document.getElementById('version').textContent='v'+(d.version||'?')+' | '+d.hostname+' | '+d.arch+' | '+(d.memory_gb||'?')+' GB RAM';
 });
 fetch('/api/health').then(function(r){return r.json()}).then(function(d){
 var h='';var svcs=d.services||{};
@@ -484,6 +716,85 @@ if(d.self)t=t+'<div class="row"><span class="lbl">Name</span><span class="val">'
 if(d.ips&&d.ips.length)t=t+'<div class="row"><span class="lbl">IPs</span><span class="val">'+d.ips.join(', ')+'</span></div>';
 document.getElementById('ts').innerHTML=t;
 });
+fetch('/api/apps').then(function(r){return r.json()}).then(function(apps){
+var inst=apps.filter(function(a){return a.enabled;});
+var el=document.getElementById('installed-apps');
+if(!inst.length){el.innerHTML='No apps installed yet. <a href="#apps" onclick="showPage(\'apps\',document.querySelectorAll(\'nav a\')[1])" style="color:#f97316;text-decoration:underline">Browse apps</a>';return;}
+var h='';
+for(var i=0;i<inst.length;i++){var a=inst[i];
+h=h+'<div class="row"><span class="lbl">'+(icons[a.icon]||'\u2699\uFE0F')+' '+a.name+'</span><span class="val ok">running</span></div>';
+}
+el.innerHTML=h;
+});
+}
+load();setInterval(load,15000);
+
+function loadApps(){
+fetch('/api/apps').then(function(r){return r.json()}).then(function(apps){
+curApps=apps;renderApps();
+});
+}
+
+function renderApps(){
+var grid=document.getElementById('app-grid');
+if(!curApps.length){grid.innerHTML='<div style="color:#888">No apps available.</div>';return;}
+var h='';
+for(var i=0;i<curApps.length;i++){
+var a=curApps[i];
+var ic=icons[a.icon]||'\u2699\uFE0F';
+var ports=a.ports&&a.ports.length?'Port '+ a.ports.join(', '):'';
+h=h+'<div class="app-card'+(a.enabled?' installed':'')+'">';
+h=h+'<div class="app-top"><span class="app-icon">'+ic+'</span><div><div class="app-name">'+a.name+'</div><div class="app-cat">'+a.category+'</div></div></div>';
+h=h+'<div class="app-desc">'+a.description+'</div>';
+h=h+'<div class="app-bottom"><span class="app-ports">'+ports+'</span>';
+if(a.enabled){
+h=h+'<button class="app-btn remove" onclick="appAction(\'uninstall\',\''+a.id+'\')">Remove</button>';
+}else{
+h=h+'<button class="app-btn install" onclick="appAction(\'install\',\''+a.id+'\')">Install</button>';
+}
+h=h+'</div></div>';
+}
+grid.innerHTML=h;
+}
+
+window.appAction=function(action,appId){
+var label=action==='install'?'Install':'Remove';
+if(action==='uninstall'&&!confirm('Remove '+appId+'? This will rebuild the system.'))return;
+var log=document.getElementById('buildlog');
+var st=document.getElementById('buildstatus');
+log.style.display='block';log.textContent='';log.setAttribute('data-n','0');
+st.style.display='block';st.className='working';st.textContent=(action==='install'?'Installing':'Removing')+' '+appId+'...';
+var btns=document.querySelectorAll('.app-btn');
+for(var i=0;i<btns.length;i++)btns[i].disabled=true;
+fetch('/api/apps/'+action,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({app:appId})})
+.then(function(r){return r.json()}).then(function(d){
+if(d.ok){appTimer=setInterval(pollAppLog,2000);}
+else{st.className='error';st.textContent='Error: '+(d.error||'unknown');enableAppBtns();}
+}).catch(function(e){st.className='error';st.textContent='Error: '+e.message;enableAppBtns();});
+};
+
+function enableAppBtns(){var btns=document.querySelectorAll('.app-btn');for(var i=0;i<btns.length;i++)btns[i].disabled=false;}
+
+function pollAppLog(){
+var log=document.getElementById('buildlog');
+var st=document.getElementById('buildstatus');
+var n=parseInt(log.getAttribute('data-n')||'0');
+fetch('/api/task-log?from='+n).then(function(r){return r.json()}).then(function(d){
+if(d.lines&&d.lines.length>0){
+for(var i=0;i<d.lines.length;i++)log.textContent=log.textContent+d.lines[i]+'\n';
+log.setAttribute('data-n',String(n+d.lines.length));log.scrollTop=log.scrollHeight;
+}
+if(d.done&&d.lines.length===0){
+clearInterval(appTimer);
+var last=log.textContent.trim().split('\n').pop()||'';
+if(last.indexOf('successfully')>=0){st.className='success';st.textContent='Done!';}
+else{st.className='error';st.textContent='Failed. Check the log above.';}
+enableAppBtns();
+loadApps();
+}
+});
+}
+
 fetch('/api/generations').then(function(r){return r.json()}).then(function(gens){
 if(!gens||!gens.length||gens[0].error){document.getElementById('gens').innerHTML='<tr><td colspan="4">No generations found</td></tr>';return;}
 var h='';
@@ -494,8 +805,6 @@ h=h+'<td>'+(g.current?'':'<button class="btn btn-sm" onclick="rollback('+g.gener
 }
 document.getElementById('gens').innerHTML=h;
 });
-}
-load();setInterval(load,15000);
 
 window.rollback=function(gen){
 if(!confirm('Switch to generation '+gen+'? The server will reboot.'))return;
@@ -508,22 +817,22 @@ fetch('/api/tailscale-setup',{method:'POST',headers:{'Content-Type':'application
 .then(function(r){return r.json()}).then(function(d){alert(d.message||JSON.stringify(d));load();});
 };
 window.doUpdate=function(){
+var logEl=document.getElementById('updatelog');
 logEl.style.display='block';logEl.textContent='Starting update...\n';logEl.setAttribute('data-n','0');
 fetch('/api/safe-update',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
-if(d.ok)timer=setInterval(pollLog,2000);else{logEl.textContent=logEl.textContent+JSON.stringify(d)+'\n';}
+if(d.ok){var t=setInterval(function(){
+var nn=parseInt(logEl.getAttribute('data-n')||'0');
+fetch('/api/task-log?from='+nn).then(function(r){return r.json()}).then(function(dd){
+if(dd.lines&&dd.lines.length>0){for(var i=0;i<dd.lines.length;i++)logEl.textContent=logEl.textContent+dd.lines[i]+'\n';
+logEl.setAttribute('data-n',String(nn+dd.lines.length));logEl.scrollTop=logEl.scrollHeight;}
+if(dd.done&&dd.lines.length===0)clearInterval(t);
+});
+},2000);}else{logEl.textContent=logEl.textContent+JSON.stringify(d)+'\n';}
 });
 };
 window.doFetch=function(){
 fetch('/api/fetch',{method:'POST'}).then(function(r){return r.json()}).then(function(d){alert(d.message||JSON.stringify(d));});
 };
-function pollLog(){
-var n=parseInt(logEl.getAttribute('data-n')||'0');
-fetch('/api/task-log?from='+n).then(function(r){return r.json()}).then(function(d){
-if(d.lines&&d.lines.length>0){for(var i=0;i<d.lines.length;i++)logEl.textContent=logEl.textContent+d.lines[i]+'\n';
-logEl.setAttribute('data-n',String(n+d.lines.length));logEl.scrollTop=logEl.scrollHeight;}
-if(d.done&&d.lines.length===0)clearInterval(timer);
-});
-}
 window.runCmd=function(){
 var inp=document.getElementById('cmd'),out=document.getElementById('term');
 var c=inp.value.trim();if(!c)return;inp.value='';
@@ -536,6 +845,9 @@ out.textContent=out.textContent+'$ ';out.scrollTop=out.scrollHeight;
 });
 };
 document.getElementById('cmd').addEventListener('keypress',function(e){if(e.key==='Enter')runCmd();});
+
+if(location.hash==='#apps')showPage('apps',document.querySelectorAll('nav a')[1]);
+else if(location.hash==='#system')showPage('system',document.querySelectorAll('nav a')[2]);
 })();
 </script></body></html>"""
 
@@ -545,7 +857,7 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        if self.path == "/":
+        if self.path in ("/", "/dashboard", "/apps", "/system"):
             html = SETUP_HTML if is_setup_mode() else DASHBOARD_HTML
             self._html(html)
         elif self.path == "/api/info":
@@ -556,6 +868,8 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
             self._json(get_tailscale_status())
         elif self.path == "/api/generations":
             self._json(get_generations())
+        elif self.path == "/api/apps":
+            self._json(get_apps())
         elif self.path.startswith("/api/task-log"):
             fr = 0
             if "from=" in self.path:
@@ -628,6 +942,30 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
                     self._json({"ok": False, "message": "Tailscale: " + r.stderr.strip()})
             except Exception as e:
                 self._json({"ok": False, "error": str(e)})
+
+        elif self.path == "/api/apps/install":
+            app_id = body.get("app", "")
+            if not app_id or not re.match(r'^[a-z][a-z0-9_-]*$', app_id):
+                self._json({"ok": False, "error": "Invalid app id"})
+                return
+            if task_running:
+                self._json({"ok": False, "error": "Task already running"})
+                return
+            t = threading.Thread(target=install_app, args=(app_id,), daemon=True)
+            t.start()
+            self._json({"ok": True})
+
+        elif self.path == "/api/apps/uninstall":
+            app_id = body.get("app", "")
+            if not app_id or not re.match(r'^[a-z][a-z0-9_-]*$', app_id):
+                self._json({"ok": False, "error": "Invalid app id"})
+                return
+            if task_running:
+                self._json({"ok": False, "error": "Task already running"})
+                return
+            t = threading.Thread(target=uninstall_app, args=(app_id,), daemon=True)
+            t.start()
+            self._json({"ok": True})
 
         elif self.path == "/api/exec":
             cmd = body.get("cmd", "")
