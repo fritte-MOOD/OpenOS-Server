@@ -29,6 +29,27 @@ os.makedirs(STATE_DIR, exist_ok=True)
 
 ENV_WITH_PATH = {**os.environ, "PATH": NIXOS_PATH + ":" + os.environ.get("PATH", "")}
 
+
+def ensure_dns():
+    """Make sure /etc/resolv.conf has working nameservers before network ops."""
+    try:
+        has_ns = False
+        try:
+            with open("/etc/resolv.conf") as f:
+                for line in f:
+                    if line.strip().startswith("nameserver") and not line.strip().endswith("127.0.0.53"):
+                        has_ns = True
+                        break
+        except FileNotFoundError:
+            pass
+        if not has_ns:
+            with open("/etc/resolv.conf", "w") as f:
+                f.write("nameserver 8.8.8.8\nnameserver 1.1.1.1\n")
+            subprocess.run(["systemctl", "restart", "nix-daemon"],
+                           timeout=15, env=ENV_WITH_PATH)
+    except Exception:
+        pass
+
 task_log = []
 task_running = False
 task_done = False
@@ -225,6 +246,7 @@ def install_app(app_id):
     log("=== Installing %s ===" % app_id)
 
     try:
+        ensure_dns()
         enabled = get_enabled_apps()
         enabled.add(app_id)
         write_apps_nix(enabled)
@@ -276,6 +298,7 @@ def uninstall_app(app_id):
     log("=== Uninstalling %s ===" % app_id)
 
     try:
+        ensure_dns()
         enabled = get_enabled_apps()
         enabled.discard(app_id)
         write_apps_nix(enabled)
@@ -366,6 +389,7 @@ def run_setup(config):
     log("Channel: %s" % channel)
 
     try:
+        ensure_dns()
         log("")
         log("Cloning OpenOS repository...")
         if os.path.exists(FLAKE_DIR + "/.git"):
@@ -913,6 +937,7 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
             if task_running:
                 self._json({"ok": False, "error": "Task already running"})
                 return
+            ensure_dns()
             t = threading.Thread(
                 target=run_task_bg,
                 args=("Safe Update", [BASH, "/etc/openos/safe-update.sh", "HEAD"]),
@@ -922,6 +947,7 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
 
         elif self.path == "/api/fetch":
             try:
+                ensure_dns()
                 subprocess.run(
                     [BASH, "-c", "cd %s && git pull origin main && git fetch --tags" % FLAKE_DIR],
                     timeout=120, env=ENV_WITH_PATH)
@@ -946,6 +972,7 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
 
                 log("=== Applying update (live, no reboot) ===")
                 try:
+                    ensure_dns()
                     log("Pulling latest from GitHub...")
                     r = subprocess.run(
                         [BASH, "-c", "cd %s && git pull origin main && git fetch --tags" % FLAKE_DIR],
