@@ -1,23 +1,26 @@
 { config, lib, pkgs, ... }:
 let
   cfg = config.openos;
+  apiBinary = "/var/lib/openos-api/openos-api";
 in {
-  # OpenOS API daemon systemd service
   systemd.services.openos-api = {
     description = "OpenOS API daemon";
     after = [ "network-online.target" "postgresql.service" "tailscaled.service" ];
     wants = [ "network-online.target" "postgresql.service" ];
     wantedBy = [ "multi-user.target" ];
 
+    unitConfig = {
+      ConditionPathExists = apiBinary;
+    };
+
     serviceConfig = {
       Type = "simple";
       User = "openos-api";
       Group = "openos-api";
-      ExecStart = "${pkgs.openos-api or "/usr/local/bin/openos-api"} serve";
+      ExecStart = "${apiBinary} serve";
       Restart = "always";
       RestartSec = 5;
 
-      # Hardening
       NoNewPrivileges = true;
       ProtectSystem = "strict";
       ProtectHome = true;
@@ -28,8 +31,6 @@ in {
         "${cfg.dataDir}"
       ];
 
-      # The API needs to trigger nixos-rebuild, which requires root.
-      # We grant it via a polkit rule or a sudoers entry for this specific command.
       AmbientCapabilities = "";
     };
 

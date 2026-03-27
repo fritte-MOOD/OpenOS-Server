@@ -15,7 +15,7 @@ import socket
 import threading
 import time
 
-PORT = 80
+PORT = 8080
 FLAKE_DIR = os.environ.get("OPENOS_FLAKE_DIR", "/etc/openos/flake")
 REPO_URL = os.environ.get("OPENOS_REPO_URL", "https://github.com/fritte-MOOD/OpenOS-Server.git")
 BASH = os.environ.get("OPENOS_BASH", "/run/current-system/sw/bin/bash")

@@ -72,14 +72,14 @@ in {
   # The setup wizard sets the real admin password and can disable root login.
   users.users.root.initialPassword = lib.mkDefault "openos";
 
-  # Firewall: admin panel + SSH always reachable
-  networking.firewall.allowedTCPPorts = [ 22 80 ];
+  # Firewall: admin panel (8080) + SSH always reachable
+  networking.firewall.allowedTCPPorts = [ 22 80 8080 ];
 
   # Console greeting with connection info
   services.getty.greetingLine = lib.mkForce ''
     \n
     OpenOS Server
-    Admin Panel: http://\4/
+    Admin Panel: http://\4/  (or :8080 direct)
     SSH:         ssh root@\4  (password: openos)
     \n
   '';

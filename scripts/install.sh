@@ -288,6 +288,7 @@ echo ""
 nixos-install \
   --root /mnt \
   --no-root-passwd \
+  --impure \
   --flake "$OPENOS_DIR/flake#$FLAKE_TARGET" \
   2>&1 | tee /tmp/openos-install.log
 

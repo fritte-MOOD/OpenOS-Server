@@ -1,15 +1,16 @@
 { config, lib, pkgs, ... }:
 {
-  # SSH hardening
+  # SSH hardening — PasswordAuthentication and PermitRootLogin are
+  # controlled by the bootloader module (mkDefault "yes" / true for
+  # first-boot access). These can be tightened after setup via
+  # the admin panel or host-config.nix.
   services.openssh = {
     enable = true;
     settings = {
-      PasswordAuthentication = false;
-      PermitRootLogin = "prohibit-password";
       KbdInteractiveAuthentication = false;
       X11Forwarding = false;
-      MaxAuthTries = 3;
-      LoginGraceTime = 30;
+      MaxAuthTries = 5;
+      LoginGraceTime = 60;
     };
     openFirewall = true;
   };

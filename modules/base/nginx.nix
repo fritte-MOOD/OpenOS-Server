@@ -19,10 +19,13 @@
       add_header Referrer-Policy "strict-origin-when-cross-origin" always;
     '';
 
-    # Default virtual host — returns 444 for unknown hosts
+    # Default virtual host — proxy to admin panel
     virtualHosts."_" = {
       default = true;
-      locations."/".return = "444";
+      locations."/" = {
+        proxyPass = "http://127.0.0.1:8080";
+        proxyWebsockets = true;
+      };
     };
 
     # OpenOS API reverse proxy (Tailscale-only by default)

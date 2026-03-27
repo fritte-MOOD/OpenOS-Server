@@ -15,11 +15,11 @@
   # Shared group for community data access
   users.groups.openos-data = { };
 
-  # Default admin user — password set during install
   users.users.admin = {
     isNormalUser = true;
     description = "OpenOS Administrator";
     extraGroups = [ "wheel" "openos-data" "networkmanager" ];
+    initialPassword = lib.mkDefault "openos";
     openssh.authorizedKeys.keys = [ ];
   };
 
