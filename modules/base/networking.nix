@@ -22,7 +22,8 @@
     usePredictableInterfaceNames = lib.mkDefault true;
   };
 
-  # DNS resolution
+  networking.nameservers = [ "8.8.8.8" "1.1.1.1" ];
+
   services.resolved = {
     enable = true;
     dnssec = "allow-downgrade";
