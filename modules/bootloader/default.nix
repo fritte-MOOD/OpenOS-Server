@@ -33,7 +33,7 @@ in {
     description = "OpenOS Admin Panel";
     after = [ "network-online.target" "tailscaled.service" ];
     wants = [ "network-online.target" ];
-    wantedBy = [ "openos-bootloader.target" ];
+    wantedBy = [ "multi-user.target" ];
     before = [ "openos-bootloader.target" ];
 
     environment = {
@@ -44,7 +44,7 @@ in {
 
     path = with pkgs; [
       bash git coreutils gnugrep gawk util-linux
-      nix mkpasswd systemd grub2
+      nix mkpasswd systemd grub2 tailscale
     ];
 
     serviceConfig = {
@@ -59,11 +59,18 @@ in {
   # the admin panel runs in setup mode
   environment.etc."openos/mode".text = lib.mkDefault "full";
 
-  # SSH always available
+  # SSH always available — password login enabled for first-boot access
   services.openssh = {
     enable = true;
-    settings.PermitRootLogin = lib.mkDefault "prohibit-password";
+    settings = {
+      PermitRootLogin = lib.mkDefault "yes";
+      PasswordAuthentication = lib.mkDefault true;
+    };
   };
+
+  # Default root password for emergency/first-boot console + SSH access.
+  # The setup wizard sets the real admin password and can disable root login.
+  users.users.root.initialPassword = lib.mkDefault "openos";
 
   # Firewall: admin panel + SSH always reachable
   networking.firewall.allowedTCPPorts = [ 22 80 ];
@@ -73,7 +80,7 @@ in {
     \n
     OpenOS Server
     Admin Panel: http://\4/
-    SSH:         ssh admin@\4
+    SSH:         ssh root@\4  (password: openos)
     \n
   '';
 
