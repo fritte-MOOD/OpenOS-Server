@@ -671,9 +671,11 @@ td{padding:.4rem;border-bottom:1px solid #222}
 <tbody id="gens"><tr><td colspan="4">Loading...</td></tr></tbody></table>
 </div>
 <div class="card"><h2>Update</h2>
+<p style="color:#888;font-size:.8rem;margin-bottom:.8rem">Pull the latest version from GitHub and apply it live — no reboot needed.</p>
 <div class="actions">
-<button class="btn" id="updateBtn" onclick="doUpdate()">Check for Updates</button>
-<button class="btn btn-gray" onclick="doFetch()">Fetch Latest</button>
+<button class="btn" onclick="doApply()">Update &amp; Apply Now</button>
+<button class="btn btn-gray" onclick="doFetch()">Fetch Only</button>
+<button class="btn btn-gray" onclick="doUpdate()">Safe Update (reboot)</button>
 </div>
 <div class="log-box" id="updatelog"></div>
 </div>
@@ -816,6 +818,20 @@ var url=prompt('Headscale server URL:');if(!url)return;
 fetch('/api/tailscale-setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({headscale_url:url})})
 .then(function(r){return r.json()}).then(function(d){alert(d.message||JSON.stringify(d));load();});
 };
+window.doApply=function(){
+var logEl=document.getElementById('updatelog');
+logEl.style.display='block';logEl.textContent='Pulling and applying...\n';logEl.setAttribute('data-n','0');
+fetch('/api/apply',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
+if(d.ok){var t=setInterval(function(){
+var nn=parseInt(logEl.getAttribute('data-n')||'0');
+fetch('/api/task-log?from='+nn).then(function(r){return r.json()}).then(function(dd){
+if(dd.lines&&dd.lines.length>0){for(var i=0;i<dd.lines.length;i++)logEl.textContent=logEl.textContent+dd.lines[i]+'\n';
+logEl.setAttribute('data-n',String(nn+dd.lines.length));logEl.scrollTop=logEl.scrollHeight;}
+if(dd.done&&dd.lines.length===0)clearInterval(t);
+});
+},2000);}else{logEl.textContent=logEl.textContent+(d.error||JSON.stringify(d))+'\n';}
+});
+};
 window.doUpdate=function(){
 var logEl=document.getElementById('updatelog');
 logEl.style.display='block';logEl.textContent='Starting update...\n';logEl.setAttribute('data-n','0');
@@ -907,11 +923,68 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
         elif self.path == "/api/fetch":
             try:
                 subprocess.run(
-                    [BASH, "-c", "cd %s && git fetch --all --tags" % FLAKE_DIR],
+                    [BASH, "-c", "cd %s && git pull origin main && git fetch --tags" % FLAKE_DIR],
                     timeout=120, env=ENV_WITH_PATH)
                 self._json({"ok": True, "message": "Repository updated."})
             except Exception as e:
                 self._json({"ok": False, "error": str(e)})
+
+        elif self.path == "/api/apply":
+            if task_running:
+                self._json({"ok": False, "error": "Task already running"})
+                return
+
+            def apply_now():
+                global task_log, task_running, task_done, task_name
+                task_log = []
+                task_running = True
+                task_done = False
+                task_name = "Apply Update"
+
+                def log(msg):
+                    task_log.append(msg)
+
+                log("=== Applying update (live, no reboot) ===")
+                try:
+                    log("Pulling latest from GitHub...")
+                    r = subprocess.run(
+                        [BASH, "-c", "cd %s && git pull origin main && git fetch --tags" % FLAKE_DIR],
+                        capture_output=True, text=True, timeout=120, env=ENV_WITH_PATH)
+                    if r.stdout.strip():
+                        log(r.stdout.strip())
+
+                    arch_r = subprocess.run(["uname", "-m"], capture_output=True, text=True, env=ENV_WITH_PATH)
+                    arch = arch_r.stdout.strip()
+                    flake_target = "openos" if arch == "x86_64" else "openos-arm"
+
+                    log("")
+                    log("Building and switching... (this may take a few minutes)")
+                    proc = subprocess.Popen(
+                        [BASH, "-c",
+                         "nixos-rebuild switch --flake %s#%s --impure 2>&1" % (FLAKE_DIR, flake_target)],
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        text=True, bufsize=1, env=ENV_WITH_PATH
+                    )
+                    for line in iter(proc.stdout.readline, ""):
+                        log(line.rstrip())
+                    proc.wait()
+
+                    if proc.returncode == 0:
+                        log("")
+                        log("=== Update applied successfully ===")
+                        log("Refresh the page to see changes.")
+                    else:
+                        log("")
+                        log("=== Update FAILED (exit code %d) ===" % proc.returncode)
+                except Exception as e:
+                    log("ERROR: %s" % e)
+
+                task_running = False
+                task_done = True
+
+            t = threading.Thread(target=apply_now, daemon=True)
+            t.start()
+            self._json({"ok": True})
 
         elif self.path == "/api/rollback":
             gen = body.get("generation")
