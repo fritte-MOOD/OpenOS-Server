@@ -6,6 +6,10 @@
     if builtins.pathExists /etc/openos/apps.nix
     then [ /etc/openos/apps.nix ]
     else [ ]
+  ) ++ (
+    if builtins.pathExists /etc/openos/mounts.nix
+    then [ /etc/openos/mounts.nix ]
+    else [ ]
   );
 
   networking.hostName = "openos";

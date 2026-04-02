@@ -1,13 +1,17 @@
 # OpenOS Server — Architecture
 
+> For the full project roadmap and planning decisions, see [ROADMAP.md](ROADMAP.md).
+
 ## Overview
 
 OpenOS Server is a NixOS-based, self-administering community server OS. It provides:
 
 - **Shared infrastructure** for communities (housing co-ops, clubs, NGOs, etc.)
-- **One-click app installation** via a Go API daemon
+- **One-click app installation** via an admin panel web UI
 - **Secure networking** via Tailscale/Headscale
 - **Data sovereignty** — all data stays on your hardware
+- **3-2-1 backup enforcement** — system guides admins toward safe storage practices
+- **Per-community app isolation** (planned) — separate app instances via NixOS containers
 
 ## System Layers
 
@@ -92,26 +96,50 @@ On first boot (no `/etc/openos/configured` file), the admin panel shows a **setu
 
 After setup, the system builds the configured generation and reboots.
 
+## Two Interfaces
+
+OpenOS has two separate user-facing interfaces for two different audiences:
+
+```
+Server-Admin (1 person)              Community Members (many)
+       |                                      |
+  Admin Panel (:8080)                  Global Stack (:3000)
+  - Storage management                - Chat, Calendar, Tasks
+  - Network / Tailscale               - Groups, Members, Documents
+  - App install / config              - Debate / Deliberation
+  - Updates / Rollback                - App launcher (SSO)
+  - User invitations
+```
+
+The Admin Panel is part of the bootloader (always running, unbreakable).
+Global Stack is an installable app like Jellyfin or Nextcloud.
+
 ## Key Principles
 
 1. **Data separation**: All data lives under `/data`, never in app-specific locations.
    PostgreSQL is the single structured data store; apps share it.
 
 2. **Declarative everything**: The entire system state is described in Nix.
-   The Go API only writes `apps.nix` (which apps are enabled) and triggers rebuilds.
+   The admin panel writes `apps.nix` (which apps are enabled) and triggers rebuilds.
 
-3. **Tailscale-first networking**: The API listens only on the Tailscale interface.
+3. **Tailscale-first networking**: All services are reachable via Tailscale.
    Public exposure via Nginx reverse proxy is opt-in per service.
 
 4. **Hardcoded security**: The control plane has no LLM involvement.
    Malware detection is rule-based (AIDE). Firewall is default-deny.
 
 5. **One-click apps**: Each app is a NixOS module under `modules/apps/`.
-   The Go API toggles `openos.apps.<name>.enable = true` and rebuilds.
+   The admin panel toggles `openos.apps.<name>.enable = true` and rebuilds.
 
 6. **Safe versioning**: Every system change creates a NixOS generation.
    Updates use GRUB one-time boot and automatic rollback. Even a completely
    broken update is reverted within minutes without manual intervention.
+
+7. **3-2-1 backup enforcement**: The system guides toward 3 copies on 2 media
+   with 1 offsite. Dashboard warns if backup targets are missing.
+
+8. **Per-community isolation** (planned): Apps run in NixOS containers,
+   one instance per community. Each community has its own data, ports, and DB.
 
 ## Versioning & Update System
 

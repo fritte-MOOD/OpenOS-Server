@@ -78,6 +78,7 @@ in {
     path = with pkgs; [
       bash git coreutils gnugrep gawk util-linux
       nix mkpasswd systemd grub2 tailscale
+      smartmontools iproute2
     ];
 
     serviceConfig = {

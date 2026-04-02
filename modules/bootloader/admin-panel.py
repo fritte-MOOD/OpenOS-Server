@@ -23,7 +23,9 @@ BASH = os.environ.get("OPENOS_BASH", "/run/current-system/sw/bin/bash")
 STATE_DIR = "/var/lib/openos"
 NIXOS_PATH = "/run/current-system/sw/bin"
 APPS_NIX = "/etc/openos/apps.nix"
+MOUNTS_NIX = "/etc/openos/mounts.nix"
 REGISTRY_JSON = "/etc/openos/registry.json"
+DATA_DIR = "/data"
 
 os.makedirs(STATE_DIR, exist_ok=True)
 
@@ -150,6 +152,399 @@ def get_health():
         except Exception:
             pass
     return {"services": services, "pending_generation": pending}
+
+
+def get_storage():
+    """Block devices, partitions, mounts, and usage."""
+    disks = []
+    try:
+        r = subprocess.run(
+            ["lsblk", "-J", "-b", "-o", "NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,MODEL,SERIAL,ROTA,RM"],
+            capture_output=True, text=True, timeout=10, env=ENV_WITH_PATH)
+        data = json.loads(r.stdout)
+        for dev in data.get("blockdevices", []):
+            if dev.get("type") not in ("disk", "loop"):
+                continue
+            if dev.get("name", "").startswith("loop"):
+                continue
+            disk = {
+                "name": dev.get("name", ""),
+                "size": dev.get("size", 0),
+                "model": (dev.get("model") or "").strip(),
+                "serial": (dev.get("serial") or "").strip(),
+                "rotational": dev.get("rota", False),
+                "removable": dev.get("rm", False),
+                "partitions": [],
+            }
+            for child in dev.get("children", []):
+                part = {
+                    "name": child.get("name", ""),
+                    "size": child.get("size", 0),
+                    "fstype": child.get("fstype") or "",
+                    "mountpoint": child.get("mountpoint") or "",
+                }
+                if part["mountpoint"]:
+                    try:
+                        st = os.statvfs(part["mountpoint"])
+                        part["total"] = st.f_frsize * st.f_blocks
+                        part["used"] = st.f_frsize * (st.f_blocks - st.f_bfree)
+                        part["avail"] = st.f_frsize * st.f_bavail
+                    except Exception:
+                        pass
+                disk["partitions"].append(part)
+            if not disk["partitions"] and dev.get("mountpoint"):
+                mp = dev.get("mountpoint")
+                part = {"name": dev["name"], "size": dev.get("size", 0),
+                        "fstype": dev.get("fstype") or "", "mountpoint": mp}
+                try:
+                    st = os.statvfs(mp)
+                    part["total"] = st.f_frsize * st.f_blocks
+                    part["used"] = st.f_frsize * (st.f_blocks - st.f_bfree)
+                    part["avail"] = st.f_frsize * st.f_bavail
+                except Exception:
+                    pass
+                disk["partitions"].append(part)
+            disks.append(disk)
+    except Exception as e:
+        return {"error": str(e), "disks": []}
+    return {"disks": disks}
+
+
+def get_storage_health():
+    """SMART health status for all disks."""
+    results = []
+    try:
+        r = subprocess.run(
+            ["lsblk", "-d", "-n", "-o", "NAME,TYPE"],
+            capture_output=True, text=True, timeout=5, env=ENV_WITH_PATH)
+        for line in r.stdout.strip().splitlines():
+            parts = line.split()
+            if len(parts) < 2 or parts[1] != "disk":
+                continue
+            name = parts[0]
+            info = {"name": name, "healthy": None, "temperature": None, "details": ""}
+            try:
+                sr = subprocess.run(
+                    ["smartctl", "-H", "-A", "-j", "/dev/" + name],
+                    capture_output=True, text=True, timeout=15, env=ENV_WITH_PATH)
+                sdata = json.loads(sr.stdout)
+                smart_status = sdata.get("smart_status", {})
+                info["healthy"] = smart_status.get("passed", None)
+                temp = sdata.get("temperature", {})
+                if temp.get("current"):
+                    info["temperature"] = temp["current"]
+                attrs = sdata.get("ata_smart_attributes", {}).get("table", [])
+                for attr in attrs:
+                    if attr.get("name") == "Reallocated_Sector_Ct":
+                        info["reallocated"] = attr.get("raw", {}).get("value", 0)
+                    elif attr.get("name") == "Power_On_Hours":
+                        info["power_on_hours"] = attr.get("raw", {}).get("value", 0)
+            except Exception:
+                info["details"] = "smartctl not available or disk does not support SMART"
+            results.append(info)
+    except Exception as e:
+        return {"error": str(e), "disks": []}
+    return {"disks": results}
+
+
+def get_storage_usage():
+    """Per-app and per-directory storage usage under /data."""
+    usage = {"total": 0, "used": 0, "avail": 0, "apps": {}, "backups": 0, "shared": 0}
+    try:
+        st = os.statvfs(DATA_DIR)
+        usage["total"] = st.f_frsize * st.f_blocks
+        usage["used"] = st.f_frsize * (st.f_blocks - st.f_bfree)
+        usage["avail"] = st.f_frsize * st.f_bavail
+    except Exception:
+        pass
+
+    apps_dir = os.path.join(DATA_DIR, "apps")
+    if os.path.isdir(apps_dir):
+        for app in os.listdir(apps_dir):
+            app_path = os.path.join(apps_dir, app)
+            if os.path.isdir(app_path):
+                try:
+                    r = subprocess.run(
+                        ["du", "-sb", app_path],
+                        capture_output=True, text=True, timeout=30, env=ENV_WITH_PATH)
+                    usage["apps"][app] = int(r.stdout.split()[0])
+                except Exception:
+                    usage["apps"][app] = 0
+
+    for subdir in ["backups", "shared"]:
+        path = os.path.join(DATA_DIR, subdir)
+        if os.path.isdir(path):
+            try:
+                r = subprocess.run(
+                    ["du", "-sb", path],
+                    capture_output=True, text=True, timeout=30, env=ENV_WITH_PATH)
+                usage[subdir] = int(r.stdout.split()[0])
+            except Exception:
+                pass
+
+    return usage
+
+
+def get_backup_status():
+    """3-2-1 backup status check."""
+    status = {
+        "copy1_ok": False, "copy1_label": "Original data",
+        "copy2_ok": False, "copy2_label": "Local backup disk",
+        "copy3_ok": False, "copy3_label": "Offsite (not configured)",
+    }
+    if os.path.isdir(DATA_DIR):
+        status["copy1_ok"] = True
+
+    backup_dir = os.path.join(DATA_DIR, "backups", "daily")
+    if os.path.isdir(backup_dir):
+        try:
+            files = sorted(os.listdir(backup_dir), reverse=True)
+            sql_files = [f for f in files if f.startswith("postgres_") and f.endswith(".sql")]
+            if sql_files:
+                status["last_backup"] = sql_files[0]
+                fname = sql_files[0].replace("postgres_", "").replace(".sql", "")
+                try:
+                    ts = time.strptime(fname, "%Y%m%d_%H%M%S")
+                    age_hours = (time.time() - time.mktime(ts)) / 3600
+                    status["backup_age_hours"] = round(age_hours, 1)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    mounts = get_configured_mounts()
+    for m in mounts:
+        if m.get("role") == "backup":
+            mp = m.get("mountpoint", "")
+            if mp and os.path.ismount(mp):
+                status["copy2_ok"] = True
+                status["copy2_label"] = "Backup: %s" % mp
+
+    return status
+
+
+def get_configured_mounts():
+    """Read /etc/openos/mounts.nix and return list of configured extra mounts."""
+    mounts = []
+    try:
+        with open(MOUNTS_NIX) as f:
+            content = f.read()
+        for m in re.finditer(
+            r'"([^"]+)"\s*=\s*\{\s*device\s*=\s*"([^"]+)";\s*fsType\s*=\s*"([^"]+)";\s*(?:options\s*=\s*\[([^\]]*)\];\s*)?(?:role\s*=\s*"([^"]*)";\s*)?',
+            content
+        ):
+            mounts.append({
+                "mountpoint": m.group(1),
+                "device": m.group(2),
+                "fsType": m.group(3),
+                "options": [o.strip().strip('"') for o in (m.group(4) or "").split() if o.strip()],
+                "role": m.group(5) or "data",
+            })
+    except FileNotFoundError:
+        pass
+    return mounts
+
+
+def write_mounts_nix(mounts):
+    """Write /etc/openos/mounts.nix from a list of mount dicts."""
+    lines = ["{\n", "  fileSystems = {\n"]
+    for m in mounts:
+        opts = ""
+        if m.get("options"):
+            opts = '      options = [ %s ];\n' % " ".join('"%s"' % o for o in m["options"])
+        lines.append('    "%s" = {\n' % m["mountpoint"])
+        lines.append('      device = "%s";\n' % m["device"])
+        lines.append('      fsType = "%s";\n' % m["fsType"])
+        if opts:
+            lines.append(opts)
+        lines.append("    };\n")
+    lines.append("  };\n")
+    lines.append("}\n")
+    with open(MOUNTS_NIX, "w") as f:
+        f.writelines(lines)
+
+
+def get_unmounted_partitions():
+    """Find partitions that are not currently mounted (candidates for mounting)."""
+    candidates = []
+    try:
+        r = subprocess.run(
+            ["lsblk", "-J", "-b", "-o", "NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,MODEL"],
+            capture_output=True, text=True, timeout=10, env=ENV_WITH_PATH)
+        data = json.loads(r.stdout)
+        for dev in data.get("blockdevices", []):
+            children = dev.get("children", [])
+            if not children:
+                if dev.get("type") == "disk" and not dev.get("mountpoint") and dev.get("fstype"):
+                    candidates.append({
+                        "device": "/dev/" + dev["name"],
+                        "size": dev.get("size", 0),
+                        "fstype": dev.get("fstype", ""),
+                        "model": (dev.get("model") or "").strip(),
+                    })
+                continue
+            for child in children:
+                if child.get("type") == "part" and not child.get("mountpoint") and child.get("fstype"):
+                    candidates.append({
+                        "device": "/dev/" + child["name"],
+                        "size": child.get("size", 0),
+                        "fstype": child.get("fstype", ""),
+                        "model": (dev.get("model") or "").strip(),
+                    })
+    except Exception:
+        pass
+    return candidates
+
+
+def mount_disk(device, mountpoint, fstype, role="data"):
+    """Add a mount to mounts.nix and trigger rebuild."""
+    global task_log, task_running, task_done, task_name
+    task_log = []
+    task_running = True
+    task_done = False
+    task_name = "Mount %s" % device
+
+    def log(msg):
+        task_log.append(msg)
+
+    log("=== Mounting %s at %s ===" % (device, mountpoint))
+
+    try:
+        ensure_dns()
+        mounts = get_configured_mounts()
+        mounts.append({
+            "mountpoint": mountpoint,
+            "device": device,
+            "fsType": fstype,
+            "options": ["nofail"],
+            "role": role,
+        })
+        write_mounts_nix(mounts)
+        log("Updated mounts.nix")
+
+        os.makedirs(mountpoint, exist_ok=True)
+        log("Created mountpoint directory")
+
+        log("")
+        log("Rebuilding system...")
+        arch_r = subprocess.run(["uname", "-m"], capture_output=True, text=True, env=ENV_WITH_PATH)
+        arch = arch_r.stdout.strip()
+        flake_target = "openos" if arch == "x86_64" else "openos-arm"
+
+        proc = subprocess.Popen(
+            [BASH, "-c",
+             "nixos-rebuild switch --flake %s#%s --impure 2>&1" % (FLAKE_DIR, flake_target)],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1, env=ENV_WITH_PATH
+        )
+        for line in iter(proc.stdout.readline, ""):
+            log(line.rstrip())
+        proc.wait()
+
+        if proc.returncode == 0:
+            log("")
+            log("=== Mount configured successfully ===")
+        else:
+            log("")
+            log("=== Mount FAILED (exit code %d) ===" % proc.returncode)
+    except Exception as e:
+        log("ERROR: %s" % e)
+
+    task_running = False
+    task_done = True
+
+
+def unmount_disk(mountpoint):
+    """Remove a mount from mounts.nix and trigger rebuild."""
+    global task_log, task_running, task_done, task_name
+    task_log = []
+    task_running = True
+    task_done = False
+    task_name = "Unmount %s" % mountpoint
+
+    def log(msg):
+        task_log.append(msg)
+
+    log("=== Removing mount %s ===" % mountpoint)
+
+    try:
+        ensure_dns()
+        mounts = get_configured_mounts()
+        mounts = [m for m in mounts if m["mountpoint"] != mountpoint]
+        write_mounts_nix(mounts)
+        log("Updated mounts.nix")
+
+        log("")
+        log("Rebuilding system...")
+        arch_r = subprocess.run(["uname", "-m"], capture_output=True, text=True, env=ENV_WITH_PATH)
+        arch = arch_r.stdout.strip()
+        flake_target = "openos" if arch == "x86_64" else "openos-arm"
+
+        proc = subprocess.Popen(
+            [BASH, "-c",
+             "nixos-rebuild switch --flake %s#%s --impure 2>&1" % (FLAKE_DIR, flake_target)],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1, env=ENV_WITH_PATH
+        )
+        for line in iter(proc.stdout.readline, ""):
+            log(line.rstrip())
+        proc.wait()
+
+        if proc.returncode == 0:
+            log("")
+            log("=== Mount removed successfully ===")
+        else:
+            log("")
+            log("=== Unmount FAILED (exit code %d) ===" % proc.returncode)
+    except Exception as e:
+        log("ERROR: %s" % e)
+
+    task_running = False
+    task_done = True
+
+
+def get_network_info():
+    """Network interfaces, IPs, and basic status."""
+    interfaces = []
+    try:
+        r = subprocess.run(
+            ["ip", "-j", "addr", "show"],
+            capture_output=True, text=True, timeout=10, env=ENV_WITH_PATH)
+        data = json.loads(r.stdout)
+        for iface in data:
+            name = iface.get("ifname", "")
+            if name == "lo":
+                continue
+            addrs = []
+            for ai in iface.get("addr_info", []):
+                addrs.append({"addr": ai.get("local", ""), "family": ai.get("family", "")})
+            kind = "ethernet"
+            if name.startswith("tailscale") or name.startswith("ts"):
+                kind = "tailscale"
+            elif name.startswith("wl"):
+                kind = "wifi"
+            elif name.startswith("docker") or name.startswith("br-") or name.startswith("veth"):
+                kind = "virtual"
+            interfaces.append({
+                "name": name,
+                "state": iface.get("operstate", "UNKNOWN"),
+                "mac": iface.get("address", ""),
+                "addresses": addrs,
+                "kind": kind,
+            })
+    except Exception as e:
+        return {"error": str(e), "interfaces": []}
+
+    dns = []
+    try:
+        with open("/etc/resolv.conf") as f:
+            for line in f:
+                if line.strip().startswith("nameserver"):
+                    dns.append(line.strip().split()[1])
+    except Exception:
+        pass
+
+    return {"interfaces": interfaces, "dns": dns}
 
 
 ICON_MAP = {
@@ -665,22 +1060,90 @@ td{padding:.4rem;border-bottom:1px solid #222}
 #buildstatus.success{background:#052e16;color:#22c55e}
 #buildstatus.error{background:#2d0a0a;color:#ef4444}
 .log-box{background:#000;border:1px solid #333;border-radius:4px;padding:.8rem;font-family:monospace;font-size:.8rem;max-height:400px;overflow-y:auto;white-space:pre-wrap;color:#aaa;display:none;margin-top:.8rem}
+.bar-track{background:#222;border-radius:4px;height:20px;overflow:hidden;margin:.4rem 0}
+.bar-fill{height:100%;border-radius:4px;transition:width .3s}
+.bar-fill.green{background:#22c55e}.bar-fill.yellow{background:#eab308}.bar-fill.red{background:#ef4444}
+.disk-card{background:#111;border:1px solid #2a2a2a;border-radius:8px;padding:1rem;margin-bottom:.8rem}
+.disk-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem}
+.disk-name{font-weight:600;color:#fff;font-size:.95rem}
+.disk-model{color:#666;font-size:.8rem}
+.disk-size{color:#888;font-family:monospace;font-size:.85rem}
+.part-row{display:flex;align-items:center;gap:.8rem;padding:.3rem 0;font-size:.85rem}
+.part-name{min-width:80px;color:#aaa;font-family:monospace}
+.part-bar{flex:1}
+.part-info{min-width:180px;text-align:right;color:#888;font-family:monospace;font-size:.8rem}
+.backup-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:.8rem;margin-top:.5rem}
+.backup-item{background:#111;border:1px solid #2a2a2a;border-radius:8px;padding:.8rem;text-align:center}
+.backup-item.active{border-color:#22c55e40}
+.backup-item.missing{border-color:#ef444440}
+.backup-icon{font-size:1.5rem;margin-bottom:.3rem}
+.backup-label{font-size:.8rem;color:#888;margin-bottom:.2rem}
+.backup-status{font-size:.85rem;font-weight:600}
+.usage-row{display:flex;align-items:center;gap:.6rem;padding:.3rem 0}
+.usage-name{min-width:100px;color:#aaa;font-size:.85rem}
+.usage-bar{flex:1}
+.usage-size{min-width:80px;text-align:right;color:#888;font-family:monospace;font-size:.8rem}
+.iface-card{background:#111;border:1px solid #2a2a2a;border-radius:8px;padding:.8rem;margin-bottom:.6rem;display:flex;align-items:center;gap:1rem}
+.iface-icon{font-size:1.3rem;width:32px;text-align:center}
+.iface-info{flex:1}
+.iface-name{font-weight:600;color:#fff;font-size:.9rem}
+.iface-addrs{font-size:.8rem;color:#888;font-family:monospace}
+.iface-state{font-size:.8rem;font-weight:600}
+.modal-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.7);z-index:100;align-items:center;justify-content:center}
+.modal-overlay.show{display:flex}
+.modal{background:#1a1a1a;border:1px solid #444;border-radius:8px;padding:1.5rem;max-width:500px;width:90%}
+.modal h3{color:#fff;margin-bottom:1rem}
+.modal label{display:block;color:#aaa;font-size:.85rem;margin-bottom:.3rem}
+.modal input,.modal select{width:100%;padding:.5rem;background:#0a0a0a;border:1px solid #444;border-radius:4px;color:#fff;font-size:.9rem;margin-bottom:.8rem}
+.modal input:focus,.modal select:focus{outline:none;border-color:#f97316}
+.modal-actions{display:flex;gap:.5rem;justify-content:flex-end;margin-top:.5rem}
 </style></head><body>
 <nav>
 <h1>OpenOS</h1>
 <a href="#dashboard" class="active" onclick="showPage('dashboard',this)">Dashboard</a>
+<a href="#storage" onclick="showPage('storage',this)">Storage</a>
+<a href="#network" onclick="showPage('network',this)">Network</a>
 <a href="#apps" onclick="showPage('apps',this)">Apps</a>
 <a href="#system" onclick="showPage('system',this)">System</a>
 </nav>
 
+<!-- ==================== DASHBOARD ==================== -->
 <div class="page show" id="p-dashboard">
 <p class="val" id="version" style="color:#888;margin-bottom:1rem;font-size:.85rem">Loading...</p>
 <div class="card"><h2>System Health</h2><div id="health">Loading...</div></div>
 <div class="card"><h2>Tailscale</h2><div id="ts">Loading...</div>
 <div class="actions"><button class="btn btn-sm btn-gray" onclick="setupTS()">Configure Tailscale</button></div></div>
+<div class="card"><h2>Storage Overview</h2><div id="dash-storage">Loading...</div></div>
 <div class="card"><h2>Installed Apps</h2><div id="installed-apps" style="color:#888;font-size:.9rem">Loading...</div></div>
 </div>
 
+<!-- ==================== STORAGE ==================== -->
+<div class="page" id="p-storage">
+<div class="card">
+<div style="display:flex;justify-content:space-between;align-items:center">
+<h2 style="margin:0">Disks</h2>
+<button class="btn btn-sm" onclick="showMountDialog()">Mount Disk</button>
+</div>
+<div id="disk-list" style="margin-top:.8rem">Loading...</div>
+</div>
+<div class="card"><h2>Data Usage</h2><div id="data-usage">Loading...</div></div>
+<div class="card"><h2>3-2-1 Backup Status</h2><div id="backup-status">Loading...</div></div>
+<div class="card"><h2>Disk Health (SMART)</h2><div id="smart-status">Loading...</div></div>
+<div id="storage-buildstatus" style="text-align:center;padding:.6rem;border-radius:6px;font-size:.9rem;font-weight:600;display:none;margin-bottom:1rem"></div>
+<div id="storage-buildlog" class="log-box"></div>
+</div>
+
+<!-- ==================== NETWORK ==================== -->
+<div class="page" id="p-network">
+<div class="card"><h2>Network Interfaces</h2><div id="iface-list">Loading...</div></div>
+<div class="card"><h2>Tailscale Nodes</h2><div id="ts-nodes">Loading...</div>
+<div class="actions">
+<button class="btn btn-sm btn-gray" onclick="setupTS()">Configure Tailscale</button>
+</div></div>
+<div class="card"><h2>DNS</h2><div id="dns-info">Loading...</div></div>
+</div>
+
+<!-- ==================== APPS ==================== -->
 <div class="page" id="p-apps">
 <div id="buildstatus"></div>
 <div id="buildlog"></div>
@@ -689,6 +1152,7 @@ td{padding:.4rem;border-bottom:1px solid #222}
 </div>
 </div>
 
+<!-- ==================== SYSTEM ==================== -->
 <div class="page" id="p-system">
 <div class="card"><h2>NixOS Generations</h2>
 <table><thead><tr><th>#</th><th>Date</th><th>Status</th><th>Actions</th></tr></thead>
@@ -711,10 +1175,39 @@ td{padding:.4rem;border-bottom:1px solid #222}
 </div></div>
 </div>
 
+<!-- ==================== MOUNT DIALOG ==================== -->
+<div class="modal-overlay" id="mount-modal">
+<div class="modal">
+<h3>Mount Disk</h3>
+<label>Device</label>
+<select id="mount-device"><option value="">Loading...</option></select>
+<label>Mount Point</label>
+<input id="mount-point" value="/data/extra" placeholder="/data/extra">
+<label>Role</label>
+<select id="mount-role">
+<option value="data">Data (extra storage)</option>
+<option value="backup">Backup (3-2-1 copy 2)</option>
+</select>
+<div class="modal-actions">
+<button class="btn btn-gray" onclick="closeMountDialog()">Cancel</button>
+<button class="btn" onclick="doMount()">Mount &amp; Apply</button>
+</div>
+</div>
+</div>
+
 <script>
 (function(){
 var icons={"tv":"\uD83D\uDCFA","cloud":"\u2601\uFE0F","brain":"\uD83E\uDDE0","sync":"\uD83D\uDD04","lock":"\uD83D\uDD12","git":"\uD83C\uDF3F","doc":"\uD83D\uDCDD","files":"\uD83D\uDCC1","music":"\uD83C\uDFB5"};
-var appTimer=null,curApps=[];
+var appTimer=null,curApps=[],storageTimer=null;
+
+function fmtBytes(b){
+if(!b||b===0)return '0 B';
+var u=['B','KB','MB','GB','TB'];var i=0;var v=b;
+while(v>=1024&&i<u.length-1){v/=1024;i++;}
+return v.toFixed(i>0?1:0)+' '+u[i];
+}
+
+function barColor(pct){return pct>90?'red':pct>70?'yellow':'green';}
 
 window.showPage=function(id,el){
 var pages=document.querySelectorAll('.page');
@@ -724,6 +1217,8 @@ var links=document.querySelectorAll('nav a');
 for(var i=0;i<links.length;i++)links[i].className='';
 if(el)el.className='active';
 if(id==='apps')loadApps();
+if(id==='storage')loadStorage();
+if(id==='network')loadNetwork();
 };
 
 function load(){
@@ -742,10 +1237,18 @@ if(d.self)t=t+'<div class="row"><span class="lbl">Name</span><span class="val">'
 if(d.ips&&d.ips.length)t=t+'<div class="row"><span class="lbl">IPs</span><span class="val">'+d.ips.join(', ')+'</span></div>';
 document.getElementById('ts').innerHTML=t;
 });
+fetch('/api/storage/usage').then(function(r){return r.json()}).then(function(d){
+var el=document.getElementById('dash-storage');
+if(d.total){
+var pct=Math.round((d.used/d.total)*100);
+el.innerHTML='<div class="row"><span class="lbl">/data</span><span class="val">'+fmtBytes(d.used)+' / '+fmtBytes(d.total)+' ('+pct+'%)</span></div>'
++'<div class="bar-track"><div class="bar-fill '+barColor(pct)+'" style="width:'+pct+'%"></div></div>';
+}else{el.innerHTML='<span class="val" style="color:#888">Not available</span>';}
+});
 fetch('/api/apps').then(function(r){return r.json()}).then(function(apps){
 var inst=apps.filter(function(a){return a.enabled;});
 var el=document.getElementById('installed-apps');
-if(!inst.length){el.innerHTML='No apps installed yet. <a href="#apps" onclick="showPage(\'apps\',document.querySelectorAll(\'nav a\')[1])" style="color:#f97316;text-decoration:underline">Browse apps</a>';return;}
+if(!inst.length){el.innerHTML='No apps installed yet. <a href="#apps" onclick="showPage(\'apps\',document.querySelectorAll(\'nav a\')[3])" style="color:#f97316;text-decoration:underline">Browse apps</a>';return;}
 var h='';
 for(var i=0;i<inst.length;i++){var a=inst[i];
 h=h+'<div class="row"><span class="lbl">'+(icons[a.icon]||'\u2699\uFE0F')+' '+a.name+'</span><span class="val ok">running</span></div>';
@@ -755,6 +1258,196 @@ el.innerHTML=h;
 }
 load();setInterval(load,15000);
 
+/* ==================== STORAGE ==================== */
+function loadStorage(){
+fetch('/api/storage').then(function(r){return r.json()}).then(function(d){
+var el=document.getElementById('disk-list');
+if(!d.disks||!d.disks.length){el.innerHTML='<div style="color:#888">No disks detected.</div>';return;}
+var h='';
+for(var i=0;i<d.disks.length;i++){
+var dk=d.disks[i];
+var dtype=dk.rotational?'HDD':'SSD';
+if(dk.removable)dtype='USB';
+h=h+'<div class="disk-card"><div class="disk-header"><div><span class="disk-name">/dev/'+dk.name+'</span> <span class="disk-model">'+dk.model+'</span></div><div><span class="disk-size">'+fmtBytes(dk.size)+'</span> <span style="color:#666;font-size:.75rem;margin-left:.5rem">'+dtype+'</span></div></div>';
+if(dk.partitions&&dk.partitions.length){
+for(var j=0;j<dk.partitions.length;j++){
+var p=dk.partitions[j];
+var pct=0,info='';
+if(p.total&&p.total>0){pct=Math.round((p.used/p.total)*100);info=fmtBytes(p.used)+' / '+fmtBytes(p.total)+' ('+pct+'%)';}
+else if(p.size){info=fmtBytes(p.size)+(p.mountpoint?'':' unmounted');}
+h=h+'<div class="part-row"><span class="part-name">'+p.name+(p.fstype?' <span style="color:#555;font-size:.75rem">'+p.fstype+'</span>':'')+'</span>';
+if(p.mountpoint){
+h=h+'<div class="part-bar"><div class="bar-track"><div class="bar-fill '+barColor(pct)+'" style="width:'+pct+'%"></div></div></div>';
+h=h+'<span class="part-info">'+p.mountpoint+' &mdash; '+info+'</span>';
+}else{
+h=h+'<div class="part-bar"></div><span class="part-info" style="color:#555">'+info+'</span>';
+}
+h=h+'</div>';
+}
+}
+h=h+'</div>';
+}
+el.innerHTML=h;
+});
+
+fetch('/api/storage/usage').then(function(r){return r.json()}).then(function(d){
+var el=document.getElementById('data-usage');
+if(!d.total){el.innerHTML='<span style="color:#888">/data not mounted</span>';return;}
+var pct=Math.round((d.used/d.total)*100);
+var h='<div class="row"><span class="lbl">/data total</span><span class="val">'+fmtBytes(d.used)+' / '+fmtBytes(d.total)+' ('+pct+'%)</span></div>';
+h=h+'<div class="bar-track"><div class="bar-fill '+barColor(pct)+'" style="width:'+pct+'%"></div></div>';
+h=h+'<div style="margin-top:.8rem">';
+var apps=d.apps||{};
+var items=[];
+for(var k in apps)items.push({name:k,size:apps[k]});
+items.sort(function(a,b){return b.size-a.size;});
+for(var i=0;i<items.length;i++){
+var a=items[i];
+var ap=d.total>0?Math.max(1,Math.round((a.size/d.total)*100)):0;
+h=h+'<div class="usage-row"><span class="usage-name">'+(icons[a.name]||'\u2699\uFE0F')+' '+a.name+'</span><div class="usage-bar"><div class="bar-track" style="height:12px"><div class="bar-fill green" style="width:'+ap+'%"></div></div></div><span class="usage-size">'+fmtBytes(a.size)+'</span></div>';
+}
+if(d.shared){
+var sp=d.total>0?Math.max(1,Math.round((d.shared/d.total)*100)):0;
+h=h+'<div class="usage-row"><span class="usage-name">\uD83D\uDCC1 shared</span><div class="usage-bar"><div class="bar-track" style="height:12px"><div class="bar-fill green" style="width:'+sp+'%"></div></div></div><span class="usage-size">'+fmtBytes(d.shared)+'</span></div>';
+}
+if(d.backups){
+var bp=d.total>0?Math.max(1,Math.round((d.backups/d.total)*100)):0;
+h=h+'<div class="usage-row"><span class="usage-name">\uD83D\uDDC4\uFE0F backups</span><div class="usage-bar"><div class="bar-track" style="height:12px"><div class="bar-fill green" style="width:'+bp+'%"></div></div></div><span class="usage-size">'+fmtBytes(d.backups)+'</span></div>';
+}
+h=h+'</div>';
+el.innerHTML=h;
+});
+
+fetch('/api/storage/backup-status').then(function(r){return r.json()}).then(function(d){
+var el=document.getElementById('backup-status');
+var h='<div class="backup-grid">';
+h=h+'<div class="backup-item '+(d.copy1_ok?'active':'missing')+'"><div class="backup-icon">'+(d.copy1_ok?'\u2705':'\u274C')+'</div><div class="backup-label">Copy 1: Original</div><div class="backup-status '+(d.copy1_ok?'ok':'fail')+'">'+d.copy1_label+'</div></div>';
+h=h+'<div class="backup-item '+(d.copy2_ok?'active':'missing')+'"><div class="backup-icon">'+(d.copy2_ok?'\u2705':'\u26A0\uFE0F')+'</div><div class="backup-label">Copy 2: Local Backup</div><div class="backup-status '+(d.copy2_ok?'ok':'warn')+'">'+d.copy2_label+'</div></div>';
+h=h+'<div class="backup-item missing"><div class="backup-icon">\u2B50</div><div class="backup-label">Copy 3: Offsite</div><div class="backup-status" style="color:#555">'+d.copy3_label+'</div></div>';
+h=h+'</div>';
+if(d.last_backup){h=h+'<div style="margin-top:.8rem;font-size:.8rem;color:#888">Last backup: '+d.last_backup+(d.backup_age_hours!=null?' ('+d.backup_age_hours+'h ago)':'')+'</div>';}
+el.innerHTML=h;
+});
+
+fetch('/api/storage/health').then(function(r){return r.json()}).then(function(d){
+var el=document.getElementById('smart-status');
+if(!d.disks||!d.disks.length){el.innerHTML='<span style="color:#888">No SMART data available.</span>';return;}
+var h='';
+for(var i=0;i<d.disks.length;i++){
+var s=d.disks[i];
+var hOk=s.healthy===true;var hFail=s.healthy===false;var hUnk=s.healthy===null;
+h=h+'<div class="row"><span class="lbl">/dev/'+s.name+'</span><span class="val '+(hOk?'ok':hFail?'fail':'')+'">'+(hOk?'PASSED':hFail?'FAILING':s.details||'N/A')+'</span></div>';
+if(s.temperature!=null)h=h+'<div class="row"><span class="lbl" style="padding-left:1rem">Temperature</span><span class="val">'+s.temperature+'\u00B0C</span></div>';
+if(s.power_on_hours!=null)h=h+'<div class="row"><span class="lbl" style="padding-left:1rem">Power-on hours</span><span class="val">'+s.power_on_hours+'h</span></div>';
+if(s.reallocated!=null&&s.reallocated>0)h=h+'<div class="row"><span class="lbl" style="padding-left:1rem">Reallocated sectors</span><span class="val warn">'+s.reallocated+'</span></div>';
+}
+el.innerHTML=h;
+});
+}
+
+window.showMountDialog=function(){
+document.getElementById('mount-modal').className='modal-overlay show';
+fetch('/api/storage/unmounted').then(function(r){return r.json()}).then(function(parts){
+var sel=document.getElementById('mount-device');
+sel.innerHTML='';
+if(!parts.length){sel.innerHTML='<option value="">No unmounted partitions found</option>';return;}
+for(var i=0;i<parts.length;i++){
+var p=parts[i];
+sel.innerHTML=sel.innerHTML+'<option value="'+p.device+'">'+p.device+' ('+fmtBytes(p.size)+', '+p.fstype+(p.model?', '+p.model:'')+')</option>';
+}
+});
+};
+window.closeMountDialog=function(){document.getElementById('mount-modal').className='modal-overlay';};
+
+window.doMount=function(){
+var dev=document.getElementById('mount-device').value;
+var mp=document.getElementById('mount-point').value.trim();
+var role=document.getElementById('mount-role').value;
+if(!dev){alert('Select a device');return;}
+if(!mp||!mp.startsWith('/')){alert('Mount point must be an absolute path');return;}
+closeMountDialog();
+var log=document.getElementById('storage-buildlog');
+var st=document.getElementById('storage-buildstatus');
+log.style.display='block';log.textContent='';log.setAttribute('data-n','0');
+st.style.display='block';st.className='working';st.style.background='#1a1000';st.style.color='#f97316';st.textContent='Mounting '+dev+' at '+mp+'...';
+fetch('/api/storage/mount',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device:dev,mountpoint:mp,role:role})})
+.then(function(r){return r.json()}).then(function(d){
+if(d.ok){storageTimer=setInterval(pollStorageLog,2000);}
+else{st.style.background='#2d0a0a';st.style.color='#ef4444';st.textContent='Error: '+(d.error||'unknown');}
+});
+};
+
+window.doUnmount=function(mp){
+if(!confirm('Remove mount '+mp+'? This will rebuild the system.'))return;
+var log=document.getElementById('storage-buildlog');
+var st=document.getElementById('storage-buildstatus');
+log.style.display='block';log.textContent='';log.setAttribute('data-n','0');
+st.style.display='block';st.className='working';st.style.background='#1a1000';st.style.color='#f97316';st.textContent='Removing mount '+mp+'...';
+fetch('/api/storage/unmount',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mountpoint:mp})})
+.then(function(r){return r.json()}).then(function(d){
+if(d.ok){storageTimer=setInterval(pollStorageLog,2000);}
+else{st.style.background='#2d0a0a';st.style.color='#ef4444';st.textContent='Error: '+(d.error||'unknown');}
+});
+};
+
+function pollStorageLog(){
+var log=document.getElementById('storage-buildlog');
+var st=document.getElementById('storage-buildstatus');
+var n=parseInt(log.getAttribute('data-n')||'0');
+fetch('/api/task-log?from='+n).then(function(r){return r.json()}).then(function(d){
+if(d.lines&&d.lines.length>0){
+for(var i=0;i<d.lines.length;i++)log.textContent=log.textContent+d.lines[i]+'\n';
+log.setAttribute('data-n',String(n+d.lines.length));log.scrollTop=log.scrollHeight;
+}
+if(d.done&&d.lines.length===0){
+clearInterval(storageTimer);
+var last=log.textContent.trim().split('\n').pop()||'';
+if(last.indexOf('successfully')>=0){st.style.background='#052e16';st.style.color='#22c55e';st.textContent='Done!';}
+else{st.style.background='#2d0a0a';st.style.color='#ef4444';st.textContent='Failed. Check log above.';}
+loadStorage();
+}
+});
+}
+
+/* ==================== NETWORK ==================== */
+function loadNetwork(){
+fetch('/api/network').then(function(r){return r.json()}).then(function(d){
+var el=document.getElementById('iface-list');
+if(!d.interfaces||!d.interfaces.length){el.innerHTML='<span style="color:#888">No interfaces found.</span>';return;}
+var h='';
+var kindIcon={"ethernet":"\uD83D\uDD0C","wifi":"\uD83D\uDCF6","tailscale":"\uD83D\uDD10","virtual":"\uD83D\uDD17"};
+for(var i=0;i<d.interfaces.length;i++){
+var iface=d.interfaces[i];
+var ic=kindIcon[iface.kind]||'\uD83C\uDF10';
+var up=iface.state==='UP';
+var addrs=[];
+for(var j=0;j<(iface.addresses||[]).length;j++){
+var a=iface.addresses[j];
+addrs.push(a.addr+' ('+a.family+')');
+}
+h=h+'<div class="iface-card"><span class="iface-icon">'+ic+'</span><div class="iface-info"><div class="iface-name">'+iface.name+' <span style="color:#555;font-size:.75rem;font-weight:400">'+iface.kind+'</span></div><div class="iface-addrs">'+(addrs.join(', ')||'no address')+'</div></div><span class="iface-state '+(up?'ok':'fail')+'">'+(up?'UP':'DOWN')+'</span></div>';
+}
+el.innerHTML=h;
+
+var dnsEl=document.getElementById('dns-info');
+var dh='';
+if(d.dns&&d.dns.length){
+for(var i=0;i<d.dns.length;i++)dh=dh+'<div class="row"><span class="lbl">Nameserver</span><span class="val">'+d.dns[i]+'</span></div>';
+}else{dh='<span style="color:#888">No DNS servers configured.</span>';}
+dnsEl.innerHTML=dh;
+});
+
+fetch('/api/tailscale').then(function(r){return r.json()}).then(function(d){
+var el=document.getElementById('ts-nodes');
+var h='<div class="row"><span class="lbl">Status</span><span class="val '+(d.connected?'ok':'fail')+'">'+(d.connected?'Connected':'Disconnected')+'</span></div>';
+if(d.self)h=h+'<div class="row"><span class="lbl">This node</span><span class="val">'+d.self+'</span></div>';
+if(d.ips&&d.ips.length)h=h+'<div class="row"><span class="lbl">IPs</span><span class="val">'+d.ips.join(', ')+'</span></div>';
+if(d.tailnet)h=h+'<div class="row"><span class="lbl">Tailnet</span><span class="val">'+d.tailnet+'</span></div>';
+el.innerHTML=h;
+});
+}
+
+/* ==================== APPS ==================== */
 function loadApps(){
 fetch('/api/apps').then(function(r){return r.json()}).then(function(apps){
 curApps=apps;renderApps();
@@ -784,7 +1477,6 @@ grid.innerHTML=h;
 }
 
 window.appAction=function(action,appId){
-var label=action==='install'?'Install':'Remove';
 if(action==='uninstall'&&!confirm('Remove '+appId+'? This will rebuild the system.'))return;
 var log=document.getElementById('buildlog');
 var st=document.getElementById('buildstatus');
@@ -821,6 +1513,7 @@ loadApps();
 });
 }
 
+/* ==================== SYSTEM ==================== */
 fetch('/api/generations').then(function(r){return r.json()}).then(function(gens){
 if(!gens||!gens.length||gens[0].error){document.getElementById('gens').innerHTML='<tr><td colspan="4">No generations found</td></tr>';return;}
 var h='';
@@ -886,8 +1579,11 @@ out.textContent=out.textContent+'$ ';out.scrollTop=out.scrollHeight;
 };
 document.getElementById('cmd').addEventListener('keypress',function(e){if(e.key==='Enter')runCmd();});
 
-if(location.hash==='#apps')showPage('apps',document.querySelectorAll('nav a')[1]);
-else if(location.hash==='#system')showPage('system',document.querySelectorAll('nav a')[2]);
+var hash=location.hash.replace('#','');
+var tabMap={'dashboard':0,'storage':1,'network':2,'apps':3,'system':4};
+if(hash&&tabMap[hash]!=null){
+showPage(hash,document.querySelectorAll('nav a')[tabMap[hash]]);
+}
 })();
 </script></body></html>"""
 
@@ -897,7 +1593,7 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        if self.path in ("/", "/dashboard", "/apps", "/system"):
+        if self.path in ("/", "/dashboard", "/apps", "/system", "/storage", "/network"):
             html = SETUP_HTML if is_setup_mode() else DASHBOARD_HTML
             self._html(html)
         elif self.path == "/api/info":
@@ -910,6 +1606,20 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
             self._json(get_generations())
         elif self.path == "/api/apps":
             self._json(get_apps())
+        elif self.path == "/api/storage":
+            self._json(get_storage())
+        elif self.path == "/api/storage/health":
+            self._json(get_storage_health())
+        elif self.path == "/api/storage/usage":
+            self._json(get_storage_usage())
+        elif self.path == "/api/storage/backup-status":
+            self._json(get_backup_status())
+        elif self.path == "/api/storage/unmounted":
+            self._json(get_unmounted_partitions())
+        elif self.path == "/api/storage/mounts":
+            self._json(get_configured_mounts())
+        elif self.path == "/api/network":
+            self._json(get_network_info())
         elif self.path.startswith("/api/task-log"):
             fr = 0
             if "from=" in self.path:
@@ -1042,6 +1752,41 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
                     self._json({"ok": False, "message": "Tailscale: " + r.stderr.strip()})
             except Exception as e:
                 self._json({"ok": False, "error": str(e)})
+
+        elif self.path == "/api/storage/mount":
+            device = body.get("device", "")
+            mountpoint = body.get("mountpoint", "")
+            role = body.get("role", "data")
+            if not device or not mountpoint:
+                self._json({"ok": False, "error": "device and mountpoint required"})
+                return
+            if not mountpoint.startswith("/"):
+                self._json({"ok": False, "error": "mountpoint must be absolute path"})
+                return
+            if task_running:
+                self._json({"ok": False, "error": "Task already running"})
+                return
+            try:
+                r = subprocess.run(["blkid", "-o", "value", "-s", "TYPE", device],
+                                   capture_output=True, text=True, timeout=5, env=ENV_WITH_PATH)
+                fstype = r.stdout.strip() or "ext4"
+            except Exception:
+                fstype = "ext4"
+            t = threading.Thread(target=mount_disk, args=(device, mountpoint, fstype, role), daemon=True)
+            t.start()
+            self._json({"ok": True})
+
+        elif self.path == "/api/storage/unmount":
+            mountpoint = body.get("mountpoint", "")
+            if not mountpoint:
+                self._json({"ok": False, "error": "mountpoint required"})
+                return
+            if task_running:
+                self._json({"ok": False, "error": "Task already running"})
+                return
+            t = threading.Thread(target=unmount_disk, args=(mountpoint,), daemon=True)
+            t.start()
+            self._json({"ok": True})
 
         elif self.path == "/api/apps/install":
             app_id = body.get("app", "")

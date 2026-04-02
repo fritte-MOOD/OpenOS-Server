@@ -1,0 +1,48 @@
+---
+description: OpenOS Server project context, architecture decisions, and conventions
+alwaysApply: true
+---
+
+# OpenOS Server — Project Context
+
+## What This Is
+
+NixOS-based community server OS. Two interfaces:
+- **Admin Panel** (Python, port 8080): Server management for the admin. Part of the bootloader, must never break.
+- **Global Stack** (Next.js, separate repo): Community workspace for members. Installable app.
+
+## Architecture Decisions (confirmed)
+
+- **Apps per community**: Each community gets its own app instances via NixOS containers (Phase 6, not yet implemented). Currently apps are global.
+- **SSO**: Single Sign-On via Authelia OIDC (Phase 5, not yet implemented).
+- **Storage**: 3-2-1 backup schema enforced. Detailed per-app/per-community usage tracking.
+- **Multi-community**: Multiple communities on one server, each with own apps and data.
+- **Container isolation**: systemd-nspawn containers per community (planned).
+
+## Current State
+
+- Bootloader: stable (Admin Panel, Tailscale, SSH, Watchdog)
+- Admin Panel: Dashboard + Apps (install/uninstall) + System (updates/rollback/terminal)
+- Apps: Jellyfin, Nextcloud, Ollama, Syncthing, Vaultwarden, Gitea, HedgeDoc defined as modules
+- Go API: routes for apps, system, communities, users (partially implemented)
+- Global Stack: NOT yet integrated (separate repo, runs on Vercel)
+
+## Key Files
+
+- modules/bootloader/admin-panel.py — Admin Panel (DO NOT break this)
+- modules/bootloader/default.nix — Bootloader layer definition
+- modules/apps/*.nix — App modules (one per app)
+- /etc/openos/apps.nix — Runtime file: which apps are enabled (written by admin panel)
+- /etc/openos/mounts.nix — Runtime file: extra disk mounts (planned)
+- docs/ROADMAP.md — Full roadmap with all planning decisions
+- docs/ARCHITECTURE.md — Technical architecture
+
+## Conventions
+
+- Admin Panel changes: Python, inline HTML/JS, single file. Keep it simple.
+- NixOS modules: declarative, lib.mkIf cfg.enable pattern, data under /data/.
+- Runtime config files go to /etc/openos/ (created by tmpfiles, writable).
+- Runtime state files go to /var/lib/openos/ (version, configured marker).
+- All network operations must call ensure_dns() first.
+- All rebuilds use --impure flag (for /etc/openos/ imports).
+- German user, English code/docs.
