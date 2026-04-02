@@ -33,22 +33,30 @@ ENV_WITH_PATH = {**os.environ, "PATH": NIXOS_PATH + ":" + os.environ.get("PATH",
 
 
 def ensure_dns():
-    """Make sure /etc/resolv.conf has working nameservers before network ops."""
+    """Make sure DNS resolution works before network ops.
+
+    Always writes resolv.conf with known-good nameservers, tests actual
+    resolution, and restarts nix-daemon if needed so Nix can download.
+    """
     try:
-        has_ns = False
+        with open("/etc/resolv.conf", "w") as f:
+            f.write("nameserver 8.8.8.8\nnameserver 1.1.1.1\n")
+
+        dns_works = False
         try:
-            with open("/etc/resolv.conf") as f:
-                for line in f:
-                    if line.strip().startswith("nameserver") and not line.strip().endswith("127.0.0.53"):
-                        has_ns = True
-                        break
-        except FileNotFoundError:
+            socket.getaddrinfo("cache.nixos.org", 443, socket.AF_INET, socket.SOCK_STREAM)
+            dns_works = True
+        except Exception:
             pass
-        if not has_ns:
-            with open("/etc/resolv.conf", "w") as f:
-                f.write("nameserver 8.8.8.8\nnameserver 1.1.1.1\n")
-            subprocess.run(["systemctl", "restart", "nix-daemon"],
-                           timeout=15, env=ENV_WITH_PATH)
+
+        if not dns_works:
+            subprocess.run(["systemctl", "restart", "systemd-resolved"],
+                           timeout=10, env=ENV_WITH_PATH, capture_output=True)
+            time.sleep(1)
+
+        subprocess.run(["systemctl", "restart", "nix-daemon"],
+                       timeout=15, env=ENV_WITH_PATH, capture_output=True)
+        time.sleep(1)
     except Exception:
         pass
 
@@ -426,6 +434,7 @@ def mount_disk(device, mountpoint, fstype, role="data"):
         log("Created mountpoint directory")
 
         log("")
+        ensure_dns()
         log("Rebuilding system...")
         arch_r = subprocess.run(["uname", "-m"], capture_output=True, text=True, env=ENV_WITH_PATH)
         arch = arch_r.stdout.strip()
@@ -475,6 +484,7 @@ def unmount_disk(mountpoint):
         log("Updated mounts.nix")
 
         log("")
+        ensure_dns()
         log("Rebuilding system...")
         arch_r = subprocess.run(["uname", "-m"], capture_output=True, text=True, env=ENV_WITH_PATH)
         arch = arch_r.stdout.strip()
@@ -647,6 +657,7 @@ def install_app(app_id):
         write_apps_nix(enabled)
         log("Updated apps.nix: %s" % ", ".join(sorted(enabled)))
         log("")
+        ensure_dns()
         log("Building system... (this may take several minutes)")
 
         arch_r = subprocess.run(["uname", "-m"], capture_output=True, text=True, env=ENV_WITH_PATH)
@@ -699,6 +710,7 @@ def uninstall_app(app_id):
         write_apps_nix(enabled)
         log("Updated apps.nix: %s" % (", ".join(sorted(enabled)) or "(none)"))
         log("")
+        ensure_dns()
         log("Rebuilding system...")
 
         arch_r = subprocess.run(["uname", "-m"], capture_output=True, text=True, env=ENV_WITH_PATH)
@@ -1695,6 +1707,8 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
                     flake_target = "openos" if arch == "x86_64" else "openos-arm"
 
                     log("")
+                    log("Ensuring DNS for nix-daemon...")
+                    ensure_dns()
                     log("Building and switching... (this may take a few minutes)")
                     proc = subprocess.Popen(
                         [BASH, "-c",
