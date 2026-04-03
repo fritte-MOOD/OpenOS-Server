@@ -24,14 +24,14 @@
 
   networking.nameservers = [ "8.8.8.8" "1.1.1.1" ];
 
-  services.resolved = {
-    enable = true;
-    dnssec = "allow-downgrade";
-    fallbackDns = [
-      "9.9.9.9"
-      "149.112.112.112"
-      "2620:fe::fe"
-      "2620:fe::9"
-    ];
-  };
+  # Write a static resolv.conf instead of letting systemd-resolved manage it.
+  # This guarantees nix-daemon (which reads /etc/resolv.conf directly) always
+  # has working nameservers, even if resolved hasn't started yet or DHCP
+  # hasn't provided DNS.
+  environment.etc."resolv.conf".text = ''
+    nameserver 8.8.8.8
+    nameserver 1.1.1.1
+  '';
+
+  services.resolved.enable = false;
 }

@@ -35,28 +35,31 @@ ENV_WITH_PATH = {**os.environ, "PATH": NIXOS_PATH + ":" + os.environ.get("PATH",
 def ensure_dns():
     """Make sure DNS resolution works before network ops.
 
-    Always writes resolv.conf with known-good nameservers, tests actual
-    resolution, and restarts nix-daemon if needed so Nix can download.
+    Tests resolution first; only intervenes if DNS is broken.
+    /etc/resolv.conf is normally managed by NixOS (static nameservers),
+    but we fix it at runtime if something overwrites it.
     """
     try:
-        with open("/etc/resolv.conf", "w") as f:
-            f.write("nameserver 8.8.8.8\nnameserver 1.1.1.1\n")
-
-        dns_works = False
         try:
+            socket.setdefaulttimeout(5)
             socket.getaddrinfo("cache.nixos.org", 443, socket.AF_INET, socket.SOCK_STREAM)
-            dns_works = True
+            return
         except Exception:
             pass
 
-        if not dns_works:
-            subprocess.run(["systemctl", "restart", "systemd-resolved"],
-                           timeout=10, env=ENV_WITH_PATH, capture_output=True)
-            time.sleep(1)
+        with open("/etc/resolv.conf", "w") as f:
+            f.write("nameserver 8.8.8.8\nnameserver 1.1.1.1\n")
 
         subprocess.run(["systemctl", "restart", "nix-daemon"],
                        timeout=15, env=ENV_WITH_PATH, capture_output=True)
-        time.sleep(1)
+        time.sleep(2)
+
+        try:
+            socket.getaddrinfo("cache.nixos.org", 443, socket.AF_INET, socket.SOCK_STREAM)
+        except Exception:
+            subprocess.run(["systemctl", "restart", "nix-daemon"],
+                           timeout=15, env=ENV_WITH_PATH, capture_output=True)
+            time.sleep(3)
     except Exception:
         pass
 

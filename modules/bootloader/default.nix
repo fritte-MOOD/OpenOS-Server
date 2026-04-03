@@ -87,6 +87,32 @@ in {
       Restart = "always";
       RestartSec = 3;
     };
+
+    restartIfChanged = true;
+    stopIfChanged = false;
+  };
+
+  # Ensure admin panel comes back after nixos-rebuild switch
+  systemd.services.openos-admin-panel-watchdog = {
+    description = "Ensure Admin Panel is running";
+    after = [ "openos-admin-panel.service" ];
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = "${pkgs.bash}/bin/bash -c 'sleep 5 && systemctl is-active --quiet openos-admin-panel.service || systemctl start openos-admin-panel.service'";
+      RemainAfterExit = true;
+    };
+    restartIfChanged = true;
+  };
+
+  # Timer keeps checking the admin panel is alive
+  systemd.timers.openos-admin-panel-watchdog = {
+    description = "Periodic admin panel health check";
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      OnBootSec = "30s";
+      OnUnitActiveSec = "60s";
+    };
   };
 
   # Mode and version are tracked in /var/lib/openos/ (writable at runtime).
