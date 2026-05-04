@@ -1,25 +1,25 @@
 { config, lib, pkgs, ... }:
 {
-  # System user for the OpenOS API daemon
-  users.users.openos-api = {
+  # System user for the homeserver OS API daemon
+  users.users.homeserver-api = {
     isSystemUser = true;
-    group = "openos-api";
-    description = "OpenOS API daemon";
-    home = "/var/lib/openos-api";
+    group = "homeserver-api";
+    description = "homeserver OS API daemon";
+    home = "/var/lib/homeserver-api";
     createHome = true;
     extraGroups = [ "systemd-journal" ];
   };
 
-  users.groups.openos-api = { };
+  users.groups.homeserver-api = { };
 
   # Shared group for community data access
-  users.groups.openos-data = { };
+  users.groups.homeserver-data = { };
 
   users.users.admin = {
     isNormalUser = true;
-    description = "OpenOS Administrator";
-    extraGroups = [ "wheel" "openos-data" "networkmanager" ];
-    initialPassword = lib.mkDefault "openos";
+    description = "homeserver OS Administrator";
+    extraGroups = [ "wheel" "homeserver-data" "networkmanager" ];
+    initialPassword = lib.mkDefault "homeserver";
     openssh.authorizedKeys.keys = [ ];
   };
 

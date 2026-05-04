@@ -7,27 +7,27 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/openos/api/internal/db"
-	"github.com/openos/api/internal/nixgen"
-	"github.com/openos/api/internal/server"
+	"github.com/homeserver/api/internal/db"
+	"github.com/homeserver/api/internal/nixgen"
+	"github.com/homeserver/api/internal/server"
 )
 
 func main() {
 	if len(os.Args) < 2 || os.Args[1] != "serve" {
-		log.Fatal("Usage: openos-api serve")
+		log.Fatal("Usage: homeserver-api serve")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	listenAddr := envOr("OPENOS_LISTEN_ADDR", "127.0.0.1:8090")
-	dbHost := envOr("OPENOS_DB_HOST", "/run/postgresql")
-	dbName := envOr("OPENOS_DB_NAME", "openos")
-	dbUser := envOr("OPENOS_DB_USER", "openos-api")
-	appsNixPath := envOr("OPENOS_APPS_NIX_PATH", "/etc/openos/apps.nix")
-	flakePath := envOr("OPENOS_FLAKE_PATH", "/etc/openos/flake")
-	registryPath := envOr("OPENOS_REGISTRY_PATH", "/etc/openos/registry.json")
-	dataDir := envOr("OPENOS_DATA_DIR", "/data")
+	listenAddr := envOr("HOMESERVER_LISTEN_ADDR", "127.0.0.1:8090")
+	dbHost := envOr("HOMESERVER_DB_HOST", "/run/postgresql")
+	dbName := envOr("HOMESERVER_DB_NAME", "homeserver")
+	dbUser := envOr("HOMESERVER_DB_USER", "homeserver-api")
+	appsNixPath := envOr("HOMESERVER_APPS_NIX_PATH", "/etc/homeserver/apps.nix")
+	flakePath := envOr("HOMESERVER_FLAKE_PATH", "/etc/homeserver/flake")
+	registryPath := envOr("HOMESERVER_REGISTRY_PATH", "/etc/homeserver/registry.json")
+	dataDir := envOr("HOMESERVER_DATA_DIR", "/data")
 
 	pool, err := db.Connect(ctx, dbHost, dbName, dbUser)
 	if err != nil {
@@ -53,7 +53,7 @@ func main() {
 		cancel()
 	}()
 
-	log.Printf("OpenOS API listening on %s", listenAddr)
+	log.Printf("homeserver OS API listening on %s", listenAddr)
 	if err := srv.ListenAndServe(ctx); err != nil {
 		log.Fatalf("Server error: %v", err)
 	}

@@ -1,14 +1,14 @@
 { config, lib, pkgs, ... }:
 let
-  cfg = config.openos.apps.gitea;
-  dataDir = "${config.openos.dataDir}/apps/gitea";
+  cfg = config.homeserver.apps.gitea;
+  dataDir = "${config.homeserver.dataDir}/apps/gitea";
 in {
-  options.openos.apps.gitea = {
+  options.homeserver.apps.gitea = {
     enable = lib.mkEnableOption "Gitea git hosting";
 
     domain = lib.mkOption {
       type = lib.types.str;
-      default = "git.${config.openos.domain}";
+      default = "git.${config.homeserver.domain}";
       description = "Domain for Gitea.";
     };
 
@@ -74,7 +74,7 @@ in {
 
     networking.firewall.allowedTCPPorts = [ cfg.sshPort ];
 
-    openos.appRegistry.gitea = {
+    homeserver.appRegistry.gitea = {
       name = "Gitea";
       description = "Lightweight self-hosted Git service for your community";
       icon = "git-branch";

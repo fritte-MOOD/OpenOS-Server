@@ -3,7 +3,7 @@ package server
 import (
 	"net/http"
 
-	"github.com/openos/api/internal/handlers"
+	"github.com/homeserver/api/internal/handlers"
 )
 
 func (s *Server) registerRoutes(mux *http.ServeMux) {

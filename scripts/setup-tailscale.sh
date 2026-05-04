@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# OpenOS Tailscale Setup Helper
+# homeserver OS Tailscale Setup Helper
 set -euo pipefail
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-log()  { echo -e "${GREEN}[OpenOS]${NC} $*"; }
+log()  { echo -e "${GREEN}[homeserver]${NC} $*"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 
 echo ""
-log "=== OpenOS Tailscale Setup ==="
+log "=== homeserver OS Tailscale Setup ==="
 echo ""
 
 # Check if already connected
@@ -24,7 +24,7 @@ if tailscale status &>/dev/null 2>&1; then
 fi
 
 # Check for saved config
-CONFIG_FILE="/etc/openos/tailscale-config"
+CONFIG_FILE="/etc/homeserver/tailscale-config"
 HEADSCALE_URL=""
 
 if [ -f "$CONFIG_FILE" ]; then

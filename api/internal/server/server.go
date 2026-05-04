@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/openos/api/internal/nixgen"
+	"github.com/homeserver/api/internal/nixgen"
 )
 
 type Config struct {

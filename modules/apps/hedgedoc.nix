@@ -1,14 +1,14 @@
 { config, lib, pkgs, ... }:
 let
-  cfg = config.openos.apps.hedgedoc;
-  dataDir = "${config.openos.dataDir}/apps/hedgedoc";
+  cfg = config.homeserver.apps.hedgedoc;
+  dataDir = "${config.homeserver.dataDir}/apps/hedgedoc";
 in {
-  options.openos.apps.hedgedoc = {
+  options.homeserver.apps.hedgedoc = {
     enable = lib.mkEnableOption "HedgeDoc collaborative markdown editor";
 
     domain = lib.mkOption {
       type = lib.types.str;
-      default = "docs.${config.openos.domain}";
+      default = "docs.${config.homeserver.domain}";
       description = "Domain for HedgeDoc.";
     };
 
@@ -58,7 +58,7 @@ in {
       };
     };
 
-    openos.appRegistry.hedgedoc = {
+    homeserver.appRegistry.hedgedoc = {
       name = "HedgeDoc";
       description = "Real-time collaborative markdown editor for your community";
       icon = "file-text";

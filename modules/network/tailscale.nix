@@ -18,20 +18,20 @@
   };
 
   networking.firewall = {
-    trustedInterfaces = [ config.openos.tailscaleInterface ];
+    trustedInterfaces = [ config.homeserver.tailscaleInterface ];
     allowedUDPPorts = [ 41641 ];
   };
 
   environment.systemPackages = [ pkgs.tailscale ];
 
   # Helper script for initial Tailscale enrollment
-  environment.etc."openos/setup-tailscale.sh" = {
+  environment.etc."homeserver/setup-tailscale.sh" = {
     mode = "0755";
     text = ''
       #!/usr/bin/env bash
       set -euo pipefail
 
-      echo "=== OpenOS Tailscale Setup ==="
+      echo "=== homeserver OS Tailscale Setup ==="
       echo ""
 
       if tailscale status &>/dev/null; then

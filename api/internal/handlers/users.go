@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/openos/api/internal/models"
+	"github.com/homeserver/api/internal/models"
 )
 
 type UserHandler struct {

@@ -1,9 +1,9 @@
 { config, lib, pkgs, ... }:
 let
-  cfg = config.openos.updates;
+  cfg = config.homeserver.updates;
 in {
-  options.openos.updates = {
-    enable = lib.mkEnableOption "automatic OpenOS updates";
+  options.homeserver.updates = {
+    enable = lib.mkEnableOption "automatic homeserver OS updates";
 
     channel = lib.mkOption {
       type = lib.types.enum [ "stable" "beta" "nightly" ];
@@ -18,8 +18,8 @@ in {
 
     repoUrl = lib.mkOption {
       type = lib.types.str;
-      default = "github:openos-project/openos-server";
-      description = "Flake URL for the OpenOS Server repository.";
+      default = "github:fritte-MOOD/OpenOS-Server";
+      description = "Flake URL for the homeserver OS repository.";
     };
 
     schedule = lib.mkOption {
@@ -49,8 +49,8 @@ in {
     # ── The core upgrade timer ──
     # Instead of the built-in system.autoUpgrade we use a custom service
     # that understands channels, tags, and staged upgrades.
-    systemd.services.openos-update-check = {
-      description = "OpenOS update checker";
+    systemd.services.homeserver-update-check = {
+      description = "homeserver OS update checker";
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
 
@@ -64,8 +64,8 @@ in {
       script = ''
         set -euo pipefail
 
-        STATE_DIR="/var/lib/openos-api"
-        FLAKE_DIR="/etc/openos/flake"
+        STATE_DIR="/var/lib/homeserver-api"
+        FLAKE_DIR="/etc/homeserver/flake"
         CHANNEL="${cfg.channel}"
         REPO_URL="${cfg.repoUrl}"
 
@@ -139,9 +139,9 @@ in {
           echo "$(date -Iseconds) Auto-applying update to $TARGET_REF via safe-update..." >> "$STATE_DIR/update.log"
 
           git checkout "$TARGET_REF" 2>> "$STATE_DIR/update.log"
-          echo "$TARGET_REF" > /var/lib/openos/version
+          echo "$TARGET_REF" > /var/lib/homeserver/version
 
-          /etc/openos/safe-update.sh "$TARGET_REF" \
+          /etc/homeserver/safe-update.sh "$TARGET_REF" \
             2>&1 | tee -a "$STATE_DIR/update.log"
 
           echo "$(date -Iseconds) Safe-update to $TARGET_REF initiated (will reboot)." >> "$STATE_DIR/update.log"
@@ -152,8 +152,8 @@ in {
       '';
     };
 
-    systemd.timers.openos-update-check = {
-      description = "OpenOS periodic update check";
+    systemd.timers.homeserver-update-check = {
+      description = "homeserver OS periodic update check";
       wantedBy = [ "timers.target" ];
       timerConfig = {
         OnCalendar = cfg.schedule;
@@ -163,14 +163,14 @@ in {
     };
 
     # ── Apply staged update (called by the API when admin confirms) ──
-    environment.etc."openos/apply-staged-update.sh" = {
+    environment.etc."homeserver/apply-staged-update.sh" = {
       mode = "0755";
       text = ''
         #!/usr/bin/env bash
         set -euo pipefail
 
-        STATE_DIR="/var/lib/openos-api"
-        FLAKE_DIR="/etc/openos/flake"
+        STATE_DIR="/var/lib/homeserver-api"
+        FLAKE_DIR="/etc/homeserver/flake"
         STAGED="$STATE_DIR/staged-update"
 
         if [ ! -f "$STAGED" ]; then
@@ -183,15 +183,15 @@ in {
 
         cd "$FLAKE_DIR"
         git checkout "$TARGET_REF"
-        echo "$TARGET_REF" > /var/lib/openos/version
+        echo "$TARGET_REF" > /var/lib/homeserver/version
         rm -f "$STAGED"
 
-        exec /etc/openos/safe-update.sh "$TARGET_REF"
+        exec /etc/homeserver/safe-update.sh "$TARGET_REF"
       '';
     };
 
     # ── Upgrade to a specific version (called by the API) ──
-    environment.etc."openos/upgrade-to-version.sh" = {
+    environment.etc."homeserver/upgrade-to-version.sh" = {
       mode = "0755";
       text = ''
         #!/usr/bin/env bash
@@ -203,8 +203,8 @@ in {
           exit 1
         fi
 
-        STATE_DIR="/var/lib/openos-api"
-        FLAKE_DIR="/etc/openos/flake"
+        STATE_DIR="/var/lib/homeserver-api"
+        FLAKE_DIR="/etc/homeserver/flake"
 
         cd "$FLAKE_DIR"
         git fetch --tags --prune origin
@@ -216,20 +216,20 @@ in {
 
         echo "Upgrading to $VERSION via safe-update..."
         git checkout "$VERSION"
-        echo "$VERSION" > /var/lib/openos/version
+        echo "$VERSION" > /var/lib/homeserver/version
 
-        exec /etc/openos/safe-update.sh "$VERSION"
+        exec /etc/homeserver/safe-update.sh "$VERSION"
       '';
     };
 
     # ── List available versions (tags) ──
-    environment.etc."openos/list-versions.sh" = {
+    environment.etc."homeserver/list-versions.sh" = {
       mode = "0755";
       text = ''
         #!/usr/bin/env bash
         set -euo pipefail
 
-        FLAKE_DIR="/etc/openos/flake"
+        FLAKE_DIR="/etc/homeserver/flake"
         CHANNEL="''${1:-all}"
 
         cd "$FLAKE_DIR"

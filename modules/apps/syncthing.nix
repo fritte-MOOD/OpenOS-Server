@@ -1,15 +1,15 @@
 { config, lib, pkgs, ... }:
 let
-  cfg = config.openos.apps.syncthing;
-  dataDir = "${config.openos.dataDir}/apps/syncthing";
-  sharedDir = "${config.openos.dataDir}/shared";
+  cfg = config.homeserver.apps.syncthing;
+  dataDir = "${config.homeserver.dataDir}/apps/syncthing";
+  sharedDir = "${config.homeserver.dataDir}/shared";
 in {
-  options.openos.apps.syncthing = {
+  options.homeserver.apps.syncthing = {
     enable = lib.mkEnableOption "Syncthing file synchronization";
 
     domain = lib.mkOption {
       type = lib.types.str;
-      default = "sync.${config.openos.domain}";
+      default = "sync.${config.homeserver.domain}";
       description = "Domain for the Syncthing web UI.";
     };
 
@@ -24,7 +24,7 @@ in {
     services.syncthing = {
       enable = true;
       user = "syncthing";
-      group = "openos-data";
+      group = "homeserver-data";
       dataDir = sharedDir;
       configDir = "${dataDir}/config";
       openDefaultPorts = true;
@@ -54,7 +54,7 @@ in {
     networking.firewall.allowedTCPPorts = [ 22000 ];
     networking.firewall.allowedUDPPorts = [ 22000 21027 ];
 
-    openos.appRegistry.syncthing = {
+    homeserver.appRegistry.syncthing = {
       name = "Syncthing";
       description = "Peer-to-peer file synchronization between community devices";
       icon = "refresh-cw";

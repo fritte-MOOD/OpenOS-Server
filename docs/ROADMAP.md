@@ -1,4 +1,4 @@
-# OpenOS Server — Roadmap
+# homeserver OS — Roadmap
 
 > Stand: 24. Maerz 2026
 > Ergebnisse der Architektur-Planung zwischen Projektinhaber und Entwicklung.
@@ -7,8 +7,8 @@
 
 ## Vision
 
-OpenOS ist ein **Community-Server-Betriebssystem** basierend auf NixOS.
-Jede Community (Sportverein, Wohnprojekt, NGO, Gemeinde) installiert OpenOS
+homeserver OS ist ein **Community-Server-Betriebssystem** basierend auf NixOS.
+Jede Community (Sportverein, Wohnprojekt, NGO, Gemeinde) installiert homeserver OS
 auf eigener Hardware und hat damit eine souveraene digitale Infrastruktur:
 Chat, Kalender, Aufgaben, Dateien, Medienstreaming, KI — alles selbst gehostet.
 
@@ -49,7 +49,7 @@ Die Benutzeroberflaeche fuer Community-Mitglieder ist **Global Stack**
 
 - Primaer ueber **Tailscale/Headscale** (VPN)
 - Netzwerk-Isolation zwischen Usern moeglich ueber Headscale ACLs
-  (konfiguriert auf dem Headscale-Server, nicht auf OpenOS)
+  (konfiguriert auf dem Headscale-Server, nicht auf homeserver OS)
 - Admin Panel zeigt: Interfaces, IPs, Tailscale-Nodes, Verbindungsstatus
 
 ### Identitaet / SSO
@@ -63,7 +63,7 @@ Die Benutzeroberflaeche fuer Community-Mitglieder ist **Global Stack**
 
 - Global Stack ist NICHT fest eingebaut, sondern ein Service der installiert wird
 - Im Admin Panel erscheint es wie Jellyfin oder Nextcloud
-- Braucht PostgreSQL (shared mit OpenOS) und Node.js Runtime
+- Braucht PostgreSQL (shared mit homeserver OS) und Node.js Runtime
 - Prisma-Schema wird auf PostgreSQL migriert (aktuell SQLite)
 
 ---
@@ -109,7 +109,7 @@ Endpunkte:
 - `GET /api/storage/usage` — Speicher pro App, pro Community-Verzeichnis
 - `POST /api/storage/mount` — Neue Platte einbinden
 
-Neue Datei: `/etc/openos/mounts.nix` (analog zu `apps.nix`)
+Neue Datei: `/etc/homeserver/mounts.nix` (analog zu `apps.nix`)
 
 UI:
 - Visuelle Balken pro Platte (belegt/frei)
@@ -124,7 +124,7 @@ UI:
 3-2-1 Enforcement:
 - System prueft ob mindestens 2 Medien vorhanden sind
 - Warnung im Dashboard wenn Backup-Platte fehlt
-- Automatische taegliche Backups (existiert bereits: `openos-backup` Service)
+- Automatische taegliche Backups (existiert bereits: `homeserver-backup` Service)
 - Backup-Ziel konfigurierbar auf zweite Platte
 
 ### Phase 2 — Network Tab
@@ -157,10 +157,10 @@ Erweitert den Apps Tab:
 Erweitert `apps.nix` Format:
 ```nix
 {
-  openos.apps.jellyfin.enable = true;
-  openos.apps.jellyfin.port = 8096;
-  openos.apps.nextcloud.enable = true;
-  openos.apps.nextcloud.domain = "files.meine-community.de";
+  homeserver.apps.jellyfin.enable = true;
+  homeserver.apps.jellyfin.port = 8096;
+  homeserver.apps.nextcloud.enable = true;
+  homeserver.apps.nextcloud.domain = "files.meine-community.de";
 }
 ```
 
@@ -246,7 +246,7 @@ Admin Panel:
 **Status:** Fernziel
 **Aufwand:** Unbestimmt
 
-- Multi-Server: User verbindet mehrere OpenOS-Server in Global Stack
+- Multi-Server: User verbindet mehrere homeserver OS-Server in Global Stack
 - Server-zu-Server: Communities teilen Inhalte ueber Tailscale
 - Offsite-Backup auf zweiten Server (3-2-1 komplett)
 
@@ -254,21 +254,21 @@ Admin Panel:
 
 ## Beziehung zu Global Stack
 
-OpenOS Server und Global Stack sind **zwei separate Projekte**:
+homeserver OS und Global Stack sind **zwei separate Projekte**:
 
-| | OpenOS Server | Global Stack |
+| | homeserver OS | Global Stack |
 |---|---|---|
 | **Repo** | `fritte-MOOD/OpenOS-Server` | `fritte-MOOD/Global_Stack` |
 | **Sprache** | Nix + Go + Python | TypeScript (Next.js) |
 | **Zweck** | Server-OS + Infrastruktur | Community-Workspace-UI |
 | **DB** | PostgreSQL (zentral) | PostgreSQL (gleiche Instanz) |
-| **Deploy** | NixOS (auf Hardware) | Als App auf OpenOS ODER Vercel |
+| **Deploy** | NixOS (auf Hardware) | Als App auf homeserver OS ODER Vercel |
 
-Global Stack kann auch **ohne** OpenOS laufen (auf Vercel mit Turso/Supabase).
-Aber auf OpenOS wird es zum nativen Community-Interface.
+Global Stack kann auch **ohne** homeserver OS laufen (auf Vercel mit Turso/Supabase).
+Aber auf homeserver OS wird es zum nativen Community-Interface.
 
 Die Verbindung:
-- Gleiche PostgreSQL-Instanz (Global Stack Prisma-Schema + OpenOS-Tabellen)
+- Gleiche PostgreSQL-Instanz (Global Stack Prisma-Schema + homeserver OS-Tabellen)
 - Go-API liest Global Stack Tabellen (`User`, `Session`, `Group`, `Membership`)
 - Auth wird geteilt: Session-Token aus Global Stack wird von Go-API validiert
 - Spaeter: Authelia als gemeinsamer OIDC-Provider

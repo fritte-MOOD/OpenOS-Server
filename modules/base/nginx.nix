@@ -28,8 +28,8 @@
       };
     };
 
-    # OpenOS API reverse proxy (Tailscale-only by default)
-    virtualHosts."api.${config.openos.domain}" = {
+    # homeserver OS API reverse proxy (Tailscale-only by default)
+    virtualHosts."api.${config.homeserver.domain}" = {
       locations."/" = {
         proxyPass = "http://127.0.0.1:8090";
         proxyWebsockets = true;
@@ -44,7 +44,7 @@
   # ACME for TLS certificates (activated when domain is not .local)
   security.acme = {
     acceptTerms = true;
-    defaults.email = config.openos.adminEmail;
+    defaults.email = config.homeserver.adminEmail;
   };
 
   networking.firewall.allowedTCPPorts = [ 80 443 ];

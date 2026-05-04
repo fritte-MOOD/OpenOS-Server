@@ -1,6 +1,6 @@
 { config, lib, pkgs, ... }:
 let
-  isFirstBoot = "! -f /etc/openos/configured";
+  isFirstBoot = "! -f /etc/homeserver/configured";
 in {
   imports = [
     ./watchdog.nix
@@ -17,20 +17,20 @@ in {
 
   # Bootloader-phase services start before everything else.
   # Even if app services crash, Tailscale + admin panel stay running.
-  systemd.targets.openos-bootloader = {
-    description = "OpenOS Bootloader — always-on management layer";
+  systemd.targets.homeserver-bootloader = {
+    description = "homeserver OS Bootloader — always-on management layer";
     after = [ "network-online.target" ];
     wants = [ "network-online.target" ];
     wantedBy = [ "multi-user.target" ];
   };
 
   systemd.services.tailscaled = {
-    before = [ "openos-bootloader.target" ];
+    before = [ "homeserver-bootloader.target" ];
   };
 
   # Auto-enroll with Headscale on first boot
-  systemd.services.openos-tailscale-enroll = {
-    description = "OpenOS Tailscale auto-enrollment";
+  systemd.services.homeserver-tailscale-enroll = {
+    description = "homeserver OS Tailscale auto-enrollment";
     after = [ "tailscaled.service" "network-online.target" ];
     wants = [ "tailscaled.service" "network-online.target" ];
     wantedBy = [ "multi-user.target" ];
@@ -62,17 +62,17 @@ in {
   };
 
   # Admin panel: lightweight Python web UI for version management
-  systemd.services.openos-admin-panel = {
-    description = "OpenOS Admin Panel";
+  systemd.services.homeserver-admin-panel = {
+    description = "homeserver OS Admin Panel";
     after = [ "network-online.target" "tailscaled.service" ];
     wants = [ "network-online.target" ];
     wantedBy = [ "multi-user.target" ];
-    before = [ "openos-bootloader.target" ];
+    before = [ "homeserver-bootloader.target" ];
 
     environment = {
-      OPENOS_BASH = "${pkgs.bash}/bin/bash";
-      OPENOS_FLAKE_DIR = "/etc/openos/flake";
-      OPENOS_REPO_URL = "https://github.com/fritte-MOOD/OpenOS-Server.git";
+      HOMESERVER_BASH = "${pkgs.bash}/bin/bash";
+      HOMESERVER_FLAKE_DIR = "/etc/homeserver/flake";
+      HOMESERVER_REPO_URL = "https://github.com/fritte-MOOD/OpenOS-Server.git";
     };
 
     path = with pkgs; [
@@ -93,20 +93,20 @@ in {
   };
 
   # Ensure admin panel comes back after nixos-rebuild switch
-  systemd.services.openos-admin-panel-watchdog = {
+  systemd.services.homeserver-admin-panel-watchdog = {
     description = "Ensure Admin Panel is running";
-    after = [ "openos-admin-panel.service" ];
+    after = [ "homeserver-admin-panel.service" ];
     wantedBy = [ "multi-user.target" ];
     serviceConfig = {
       Type = "oneshot";
-      ExecStart = "${pkgs.bash}/bin/bash -c 'sleep 5 && systemctl is-active --quiet openos-admin-panel.service || systemctl start openos-admin-panel.service'";
+      ExecStart = "${pkgs.bash}/bin/bash -c 'sleep 5 && systemctl is-active --quiet homeserver-admin-panel.service || systemctl start homeserver-admin-panel.service'";
       RemainAfterExit = true;
     };
     restartIfChanged = true;
   };
 
   # Timer keeps checking the admin panel is alive
-  systemd.timers.openos-admin-panel-watchdog = {
+  systemd.timers.homeserver-admin-panel-watchdog = {
     description = "Periodic admin panel health check";
     wantedBy = [ "timers.target" ];
     timerConfig = {
@@ -115,8 +115,8 @@ in {
     };
   };
 
-  # Mode and version are tracked in /var/lib/openos/ (writable at runtime).
-  # First-boot detection: if /var/lib/openos/configured doesn't exist,
+  # Mode and version are tracked in /var/lib/homeserver/ (writable at runtime).
+  # First-boot detection: if /var/lib/homeserver/configured doesn't exist,
   # the admin panel runs in setup mode.
 
   # SSH always available — password login enabled for first-boot access
@@ -130,7 +130,7 @@ in {
 
   # Default root password for emergency/first-boot console + SSH access.
   # The setup wizard sets the real admin password and can disable root login.
-  users.users.root.initialPassword = lib.mkDefault "openos";
+  users.users.root.initialPassword = lib.mkDefault "homeserver";
 
   # Firewall: admin panel (8080) + SSH always reachable
   networking.firewall.allowedTCPPorts = [ 22 80 8080 ];
@@ -138,28 +138,28 @@ in {
   # Console greeting with connection info
   services.getty.greetingLine = lib.mkForce ''
     \n
-    OpenOS Server
+    homeserver OS
     Admin Panel: http://\4/  (or :8080 direct)
-    SSH:         ssh root@\4  (password: openos)
+    SSH:         ssh root@\4  (password: homeserver)
     \n
   '';
 
   # Safe-update helper: build new generation, set GRUB one-time boot, reboot
-  environment.etc."openos/safe-update.sh" = {
+  environment.etc."homeserver/safe-update.sh" = {
     mode = "0755";
     text = ''
       #!/usr/bin/env bash
       set -euo pipefail
 
-      FLAKE_DIR="/etc/openos/flake"
-      STATE_DIR="/var/lib/openos"
+      FLAKE_DIR="/etc/homeserver/flake"
+      STATE_DIR="/var/lib/homeserver"
       ${pkgs.coreutils}/bin/mkdir -p "$STATE_DIR"
 
       VERSION="''${1:-HEAD}"
       ARCH=$(${pkgs.coreutils}/bin/uname -m)
       case "$ARCH" in
-        x86_64)  TARGET="openos" ;;
-        aarch64) TARGET="openos-arm" ;;
+        x86_64)  TARGET="homeserver" ;;
+        aarch64) TARGET="homeserver-arm" ;;
         *)       echo "Unknown arch: $ARCH"; exit 1 ;;
       esac
 
@@ -187,13 +187,13 @@ in {
   };
 
   # Confirm current generation as the new default
-  environment.etc."openos/confirm-generation.sh" = {
+  environment.etc."homeserver/confirm-generation.sh" = {
     mode = "0755";
     text = ''
       #!/usr/bin/env bash
       set -euo pipefail
 
-      STATE_DIR="/var/lib/openos"
+      STATE_DIR="/var/lib/homeserver"
       PENDING="$STATE_DIR/pending-generation"
 
       if [ ! -f "$PENDING" ]; then
@@ -207,7 +207,7 @@ in {
       ${pkgs.grub2}/bin/grub-set-default "$((GEN - 1))"
 
       VERSION=$(${pkgs.coreutils}/bin/cat "$STATE_DIR/pending-version" 2>/dev/null || echo "unknown")
-      echo "$VERSION" > /var/lib/openos/version
+      echo "$VERSION" > /var/lib/homeserver/version
 
       ${pkgs.coreutils}/bin/rm -f "$STATE_DIR/pending-generation" \
         "$STATE_DIR/pending-version" \
@@ -219,9 +219,18 @@ in {
     '';
   };
 
+  # Prevent nixos-rebuild switch from deadlocking on dbus/firewall reload.
+  # D-Bus reload can hang because systemctl itself communicates over D-Bus;
+  # reloading dbus disrupts that connection, causing the activation script
+  # to block indefinitely.  Changes take effect on the next reboot instead.
+  systemd.services.dbus.reloadIfChanged = lib.mkForce false;
+  systemd.services.dbus.restartIfChanged = lib.mkForce false;
+  systemd.services.firewall.reloadIfChanged = lib.mkForce false;
+  systemd.services.firewall.restartIfChanged = lib.mkForce false;
+
   # Ensure state directories
   systemd.tmpfiles.rules = [
-    "d /var/lib/openos 0755 root root -"
-    "d /etc/openos 0755 root root -"
+    "d /var/lib/homeserver 0755 root root -"
+    "d /etc/homeserver 0755 root root -"
   ];
 }

@@ -1,6 +1,6 @@
-# OpenOS Server — USB-Installationsanleitung
+# homeserver OS — USB-Installationsanleitung
 
-Schritt-für-Schritt-Anleitung, um OpenOS auf einem Server zu installieren.
+Schritt-für-Schritt-Anleitung, um homeserver OS auf einem Server zu installieren.
 
 ## Was du brauchst
 
@@ -17,13 +17,13 @@ Schritt-für-Schritt-Anleitung, um OpenOS auf einem Server zu installieren.
 
 ## Schritt 1: USB-Stick vorbereiten
 
-### Option A: OpenOS Installer ISO (empfohlen)
+### Option A: homeserver OS Installer ISO (empfohlen)
 
 ```bash
 git clone https://github.com/fritte-MOOD/OpenOS-Server.git
 cd OpenOS-Server
 nix build .#packages.x86_64-linux.installer-iso
-ls result/iso/   # → openos-installer-*.iso
+ls result/iso/   # → homeserver-installer-*.iso
 ```
 
 ### Option B: Standard NixOS ISO
@@ -38,14 +38,14 @@ NixOS Minimal ISO herunterladen: https://nixos.org/download#nixos-iso
 ```bash
 diskutil list                    # USB-Stick finden
 diskutil unmountDisk /dev/diskN
-sudo dd if=openos-installer-*.iso of=/dev/rdiskN bs=4m status=progress
+sudo dd if=homeserver-installer-*.iso of=/dev/rdiskN bs=4m status=progress
 diskutil eject /dev/diskN
 ```
 
 ### Linux
 ```bash
 lsblk                           # USB-Stick finden
-sudo dd if=openos-installer-*.iso of=/dev/sdX bs=4M status=progress conv=fsync
+sudo dd if=homeserver-installer-*.iso of=/dev/sdX bs=4M status=progress conv=fsync
 ```
 
 ### Windows
@@ -77,13 +77,13 @@ sudo dd if=openos-installer-*.iso of=/dev/sdX bs=4M status=progress conv=fsync
 
 ## Schritt 4: Installer starten
 
-### Mit OpenOS ISO:
+### Mit homeserver OS ISO:
 
 ```
-Welcome to OpenOS Server Installer
+Welcome to homeserver OS Installer
 ===================================
-  1) Install OpenOS (interactive)
-  2) Install OpenOS (from network)
+  1) Install homeserver OS (interactive)
+  2) Install homeserver OS (from network)
   3) Drop to shell
 ```
 
@@ -118,12 +118,12 @@ Type 'yes' to continue: yes
 ```
 
 ### 5.3 Warten
-Der Installer partitioniert, lädt OpenOS herunter und installiert das System. **5-15 Minuten.**
+Der Installer partitioniert, lädt homeserver OS herunter und installiert das System. **5-15 Minuten.**
 
 ### 5.4 Fertig
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  OpenOS installed successfully!
+  homeserver OS installed successfully!
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   1. Remove the USB stick
   2. Reboot
@@ -157,10 +157,10 @@ Wird auf dem Server-Bildschirm angezeigt. Oder im Router nachschauen.
 - Channel: Stable / Beta / Nightly
 
 ### 6.4 Installieren
-**"Install OpenOS"** klicken. Das System baut sich selbst — dauert **10-30 Minuten**.
+**"Install homeserver OS"** klicken. Das System baut sich selbst — dauert **10-30 Minuten**.
 
 ### 6.5 Automatischer Neustart
-Danach startet der Server neu. Jetzt läuft das volle OpenOS.
+Danach startet der Server neu. Jetzt läuft das volle homeserver OS.
 
 ---
 
@@ -216,8 +216,8 @@ sudo dhclient enp0s3
 ### Admin Panel nicht erreichbar
 ```bash
 ssh admin@<server-ip>
-sudo systemctl status openos-admin-panel
-sudo journalctl -u openos-admin-panel -f
+sudo systemctl status homeserver-admin-panel
+sudo journalctl -u homeserver-admin-panel -f
 ```
 
 ### Update fehlgeschlagen
@@ -231,5 +231,5 @@ Der Watchdog handelt automatisch. Falls manuell nötig:
 ## Nächste Schritte
 
 - [Installationsreferenz](INSTALL.md) — alle Methoden
-- [Architektur](ARCHITECTURE.md) — wie OpenOS funktioniert
+- [Architektur](ARCHITECTURE.md) — wie homeserver OS funktioniert
 - [App-Entwicklung](APP_DEVELOPMENT.md) — eigene Apps bauen

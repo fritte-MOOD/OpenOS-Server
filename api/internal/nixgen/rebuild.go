@@ -21,7 +21,7 @@ func (g *Generator) Rebuild(ctx context.Context) (*RebuildResult, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "sudo", "nixos-rebuild", "switch",
-		"--flake", g.flakePath+"#openos",
+		"--flake", g.flakePath+"#homeserver",
 		"--impure",
 		"--no-write-lock-file",
 	)
@@ -60,7 +60,7 @@ func (g *Generator) RebuildDryRun(ctx context.Context) (*RebuildResult, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "sudo", "nixos-rebuild", "dry-activate",
-		"--flake", g.flakePath+"#openos",
+		"--flake", g.flakePath+"#homeserver",
 		"--impure",
 		"--no-write-lock-file",
 	)

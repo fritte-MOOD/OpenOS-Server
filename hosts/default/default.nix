@@ -3,26 +3,26 @@
   imports = [
     ./hardware-generic.nix
   ] ++ (
-    if builtins.pathExists /etc/openos/apps.nix
-    then [ /etc/openos/apps.nix ]
+    if builtins.pathExists /etc/homeserver/apps.nix
+    then [ /etc/homeserver/apps.nix ]
     else [ ]
   ) ++ (
-    if builtins.pathExists /etc/openos/mounts.nix
-    then [ /etc/openos/mounts.nix ]
+    if builtins.pathExists /etc/homeserver/mounts.nix
+    then [ /etc/homeserver/mounts.nix ]
     else [ ]
   ) ++ (
-    if builtins.pathExists /etc/openos/host-id.nix
-    then [ /etc/openos/host-id.nix ]
+    if builtins.pathExists /etc/homeserver/host-id.nix
+    then [ /etc/homeserver/host-id.nix ]
     else [ ]
   );
 
-  networking.hostName = "openos";
+  networking.hostName = "homeserver";
   # Required for ZFS — generated per-machine during install, placeholder here
   networking.hostId = lib.mkDefault "deadbeef";
 
-  openos = {
-    domain = "openos.local";
-    adminEmail = "admin@openos.local";
+  homeserver = {
+    domain = "homeserver.local";
+    adminEmail = "admin@homeserver.local";
     updates = {
       enable = true;
       channel = "stable";

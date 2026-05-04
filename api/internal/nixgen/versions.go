@@ -10,14 +10,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/openos/api/internal/models"
+	"github.com/homeserver/api/internal/models"
 )
 
 func (g *Generator) ListGenerations(ctx context.Context) ([]models.Generation, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "/etc/openos/list-generations.sh")
+	cmd := exec.CommandContext(ctx, "/etc/homeserver/list-generations.sh")
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 
@@ -38,7 +38,7 @@ func (g *Generator) RollbackToGeneration(ctx context.Context, generation int) (*
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "sudo", "/etc/openos/rollback-to.sh",
+	cmd := exec.CommandContext(ctx, "sudo", "/etc/homeserver/rollback-to.sh",
 		fmt.Sprintf("%d", generation))
 
 	var stdout, stderr bytes.Buffer
@@ -68,7 +68,7 @@ func (g *Generator) ListVersions(ctx context.Context, channel string) ([]models.
 		channel = "all"
 	}
 
-	cmd := exec.CommandContext(ctx, "/etc/openos/list-versions.sh", channel)
+	cmd := exec.CommandContext(ctx, "/etc/homeserver/list-versions.sh", channel)
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 
@@ -84,7 +84,7 @@ func (g *Generator) ListVersions(ctx context.Context, channel string) ([]models.
 }
 
 func (g *Generator) GetUpdateStatus() (*models.UpdateStatus, error) {
-	data, err := os.ReadFile("/var/lib/openos-api/update-status.json")
+	data, err := os.ReadFile("/var/lib/homeserver-api/update-status.json")
 	if err != nil {
 		if os.IsNotExist(err) {
 			return &models.UpdateStatus{
@@ -102,7 +102,7 @@ func (g *Generator) GetUpdateStatus() (*models.UpdateStatus, error) {
 		return nil, fmt.Errorf("parse update status: %w", err)
 	}
 
-	staged, err := os.ReadFile("/var/lib/openos-api/staged-update")
+	staged, err := os.ReadFile("/var/lib/homeserver-api/staged-update")
 	if err == nil {
 		status.StagedUpdate = strings.TrimSpace(string(staged))
 	}
@@ -116,7 +116,7 @@ func (g *Generator) UpgradeToVersion(ctx context.Context, version string) (*Rebu
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "sudo", "/etc/openos/upgrade-to-version.sh", version)
+	cmd := exec.CommandContext(ctx, "sudo", "/etc/homeserver/upgrade-to-version.sh", version)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -143,7 +143,7 @@ func (g *Generator) ApplyStagedUpdate(ctx context.Context) (*RebuildResult, erro
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "sudo", "/etc/openos/apply-staged-update.sh")
+	cmd := exec.CommandContext(ctx, "sudo", "/etc/homeserver/apply-staged-update.sh")
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -168,7 +168,7 @@ func (g *Generator) CheckForUpdates(ctx context.Context) (*models.UpdateStatus, 
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "sudo", "systemctl", "start", "openos-update-check.service")
+	cmd := exec.CommandContext(ctx, "sudo", "systemctl", "start", "homeserver-update-check.service")
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("trigger update check: %w", err)
 	}
@@ -178,7 +178,7 @@ func (g *Generator) CheckForUpdates(ctx context.Context) (*models.UpdateStatus, 
 }
 
 func (g *Generator) GetUpgradeHistory() ([]models.UpgradeHistoryEntry, error) {
-	data, err := os.ReadFile("/var/lib/openos-api/upgrade-history")
+	data, err := os.ReadFile("/var/lib/homeserver-api/upgrade-history")
 	if err != nil {
 		if os.IsNotExist(err) {
 			return []models.UpgradeHistoryEntry{}, nil
@@ -216,7 +216,7 @@ func (g *Generator) GetUpgradeHistory() ([]models.UpgradeHistoryEntry, error) {
 }
 
 func (g *Generator) getCurrentVersion() string {
-	for _, p := range []string{"/var/lib/openos/version", "/etc/openos/version"} {
+	for _, p := range []string{"/var/lib/homeserver/version", "/etc/homeserver/version"} {
 		data, err := os.ReadFile(p)
 		if err == nil {
 			return strings.TrimSpace(string(data))

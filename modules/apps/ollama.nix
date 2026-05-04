@@ -1,9 +1,9 @@
 { config, lib, pkgs, pkgsUnstable, ... }:
 let
-  cfg = config.openos.apps.ollama;
-  dataDir = "${config.openos.dataDir}/apps/ollama";
+  cfg = config.homeserver.apps.ollama;
+  dataDir = "${config.homeserver.dataDir}/apps/ollama";
 in {
-  options.openos.apps.ollama = {
+  options.homeserver.apps.ollama = {
     enable = lib.mkEnableOption "Ollama local LLM server";
 
     port = lib.mkOption {
@@ -27,7 +27,7 @@ in {
 
     domain = lib.mkOption {
       type = lib.types.str;
-      default = "llm.${config.openos.domain}";
+      default = "llm.${config.homeserver.domain}";
       description = "Domain for the Ollama web interface.";
     };
   };
@@ -73,7 +73,7 @@ in {
       };
     };
 
-    openos.appRegistry.ollama = {
+    homeserver.appRegistry.ollama = {
       name = "Ollama";
       description = "Local LLM server with web interface — share GPU-powered AI with your community";
       icon = "brain";

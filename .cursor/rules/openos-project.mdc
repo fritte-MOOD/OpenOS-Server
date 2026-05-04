@@ -1,9 +1,9 @@
 ---
-description: OpenOS Server project context, architecture decisions, and conventions
+description: homeserver OS project context, architecture decisions, and conventions
 alwaysApply: true
 ---
 
-# OpenOS Server — Project Context
+# homeserver OS — Project Context
 
 ## What This Is
 
@@ -32,8 +32,8 @@ NixOS-based community server OS. Two interfaces:
 - modules/bootloader/admin-panel.py — Admin Panel (DO NOT break this)
 - modules/bootloader/default.nix — Bootloader layer definition
 - modules/apps/*.nix — App modules (one per app)
-- /etc/openos/apps.nix — Runtime file: which apps are enabled (written by admin panel)
-- /etc/openos/mounts.nix — Runtime file: extra disk mounts (planned)
+- /etc/homeserver/apps.nix — Runtime file: which apps are enabled (written by admin panel)
+- /etc/homeserver/mounts.nix — Runtime file: extra disk mounts (planned)
 - docs/ROADMAP.md — Full roadmap with all planning decisions
 - docs/ARCHITECTURE.md — Technical architecture
 
@@ -41,8 +41,8 @@ NixOS-based community server OS. Two interfaces:
 
 - Admin Panel changes: Python, inline HTML/JS, single file. Keep it simple.
 - NixOS modules: declarative, lib.mkIf cfg.enable pattern, data under /data/.
-- Runtime config files go to /etc/openos/ (created by tmpfiles, writable).
-- Runtime state files go to /var/lib/openos/ (version, configured marker).
+- Runtime config files go to /etc/homeserver/ (created by tmpfiles, writable).
+- Runtime state files go to /var/lib/homeserver/ (version, configured marker).
 - All network operations must call ensure_dns() first.
-- All rebuilds use --impure flag (for /etc/openos/ imports).
+- All rebuilds use --impure flag (for /etc/homeserver/ imports).
 - German user, English code/docs.

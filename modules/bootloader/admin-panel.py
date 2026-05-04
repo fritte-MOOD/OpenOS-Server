@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-OpenOS Admin Panel — Bootloader Web UI
+homeserver OS Admin Panel — Bootloader Web UI
 
 Two modes:
-  - Setup mode:  first boot, no /etc/openos/configured yet
+  - Setup mode:  first boot, no /etc/homeserver/configured yet
   - Normal mode: generation management, safe-update, rollback, health
 """
 
@@ -17,14 +17,14 @@ import threading
 import time
 
 PORT = 8080
-FLAKE_DIR = os.environ.get("OPENOS_FLAKE_DIR", "/etc/openos/flake")
-REPO_URL = os.environ.get("OPENOS_REPO_URL", "https://github.com/fritte-MOOD/OpenOS-Server.git")
-BASH = os.environ.get("OPENOS_BASH", "/run/current-system/sw/bin/bash")
-STATE_DIR = "/var/lib/openos"
+FLAKE_DIR = os.environ.get("HOMESERVER_FLAKE_DIR", "/etc/homeserver/flake")
+REPO_URL = os.environ.get("HOMESERVER_REPO_URL", "https://github.com/fritte-MOOD/OpenOS-Server.git")
+BASH = os.environ.get("HOMESERVER_BASH", "/run/current-system/sw/bin/bash")
+STATE_DIR = "/var/lib/homeserver"
 NIXOS_PATH = "/run/current-system/sw/bin"
-APPS_NIX = "/etc/openos/apps.nix"
-MOUNTS_NIX = "/etc/openos/mounts.nix"
-REGISTRY_JSON = "/etc/openos/registry.json"
+APPS_NIX = "/etc/homeserver/apps.nix"
+MOUNTS_NIX = "/etc/homeserver/mounts.nix"
+REGISTRY_JSON = "/etc/homeserver/registry.json"
 DATA_DIR = "/data"
 
 os.makedirs(STATE_DIR, exist_ok=True)
@@ -81,7 +81,7 @@ def get_ip():
 
 
 def is_setup_mode():
-    return not os.path.exists("/var/lib/openos/configured")
+    return not os.path.exists("/var/lib/homeserver/configured")
 
 
 def get_system_info():
@@ -105,7 +105,7 @@ def get_system_info():
     except Exception:
         info["disks"] = []
     info["setup_mode"] = is_setup_mode()
-    for vpath in ["/var/lib/openos/version", "/etc/openos/version"]:
+    for vpath in ["/var/lib/homeserver/version", "/etc/homeserver/version"]:
         try:
             with open(vpath) as f:
                 info["version"] = f.read().strip()
@@ -119,11 +119,104 @@ def get_system_info():
 
 def get_generations():
     try:
-        r = subprocess.run([BASH, "/etc/openos/list-generations.sh"],
+        r = subprocess.run([BASH, "/etc/homeserver/list-generations.sh"],
                            capture_output=True, text=True, timeout=30, env=ENV_WITH_PATH)
         return json.loads(r.stdout)
     except Exception as e:
         return [{"error": str(e)}]
+
+
+def save_generation_note(note_text):
+    """After a rebuild, detect the new current generation and save a note for it."""
+    notes_path = os.path.join(STATE_DIR, "generation-notes.json")
+    notes = {}
+    try:
+        with open(notes_path) as f:
+            notes = json.loads(f.read())
+    except Exception:
+        pass
+    try:
+        r = subprocess.run(
+            [BASH, "-c",
+             "nix-env --list-generations --profile /nix/var/nix/profiles/system | tail -1 | awk '{print $1}'"],
+            capture_output=True, text=True, timeout=10, env=ENV_WITH_PATH)
+        gen = r.stdout.strip()
+        if gen:
+            notes[gen] = note_text
+            with open(notes_path, "w") as f:
+                f.write(json.dumps(notes))
+    except Exception:
+        pass
+
+
+def get_update_status():
+    """Check git remote for updates and report system freshness."""
+    result = {
+        "up_to_date": True,
+        "local_ref": "",
+        "remote_ref": "",
+        "last_update": None,
+        "dirty": False,
+        "current_generation": None,
+        "nixos_version": "",
+        "commits_behind": 0,
+    }
+    try:
+        r = subprocess.run(
+            [BASH, "-c", "cd %s && git rev-parse HEAD" % FLAKE_DIR],
+            capture_output=True, text=True, timeout=10, env=ENV_WITH_PATH)
+        result["local_ref"] = r.stdout.strip()[:12]
+    except Exception:
+        pass
+    try:
+        r = subprocess.run(
+            [BASH, "-c", "cd %s && git fetch origin main --quiet 2>/dev/null; "
+             "git rev-parse origin/main 2>/dev/null || echo ''" % FLAKE_DIR],
+            capture_output=True, text=True, timeout=30, env=ENV_WITH_PATH)
+        result["remote_ref"] = r.stdout.strip()[:12]
+    except Exception:
+        pass
+    if result["local_ref"] and result["remote_ref"]:
+        result["up_to_date"] = result["local_ref"] == result["remote_ref"]
+    if not result["up_to_date"] and result["local_ref"] and result["remote_ref"]:
+        try:
+            r = subprocess.run(
+                [BASH, "-c",
+                 "cd %s && git rev-list --count HEAD..origin/main 2>/dev/null || echo 0" % FLAKE_DIR],
+                capture_output=True, text=True, timeout=10, env=ENV_WITH_PATH)
+            result["commits_behind"] = int(r.stdout.strip() or "0")
+        except Exception:
+            pass
+    try:
+        r = subprocess.run(
+            [BASH, "-c", "cd %s && git diff --quiet HEAD 2>/dev/null; echo $?" % FLAKE_DIR],
+            capture_output=True, text=True, timeout=10, env=ENV_WITH_PATH)
+        result["dirty"] = r.stdout.strip() != "0"
+    except Exception:
+        pass
+    try:
+        r = subprocess.run(
+            [BASH, "-c",
+             "cd %s && git log -1 --format='%%ai' HEAD 2>/dev/null" % FLAKE_DIR],
+            capture_output=True, text=True, timeout=10, env=ENV_WITH_PATH)
+        result["last_update"] = r.stdout.strip()
+    except Exception:
+        pass
+    try:
+        with open("/run/current-system/nixos-version") as f:
+            result["nixos_version"] = f.read().strip()
+    except Exception:
+        pass
+    try:
+        r = subprocess.run(
+            [BASH, "-c",
+             "nix-env --list-generations --profile /nix/var/nix/profiles/system "
+             "| tail -1 | awk '{print $1}'"],
+            capture_output=True, text=True, timeout=10, env=ENV_WITH_PATH)
+        result["current_generation"] = int(r.stdout.strip() or "0")
+    except Exception:
+        pass
+    return result
 
 
 def get_tailscale_status():
@@ -144,8 +237,8 @@ def get_tailscale_status():
 def get_health():
     services = {
         "tailscaled": False, "sshd": False,
-        "openos-admin-panel": True,
-        "postgresql": False, "nginx": False, "openos-api": False,
+        "homeserver-admin-panel": True,
+        "postgresql": False, "nginx": False, "homeserver-api": False,
     }
     for svc in services:
         try:
@@ -335,7 +428,7 @@ def get_backup_status():
 
 
 def get_configured_mounts():
-    """Read /etc/openos/mounts.nix and return list of configured extra mounts."""
+    """Read /etc/homeserver/mounts.nix and return list of configured extra mounts."""
     mounts = []
     try:
         with open(MOUNTS_NIX) as f:
@@ -357,7 +450,7 @@ def get_configured_mounts():
 
 
 def write_mounts_nix(mounts):
-    """Write /etc/openos/mounts.nix from a list of mount dicts."""
+    """Write /etc/homeserver/mounts.nix from a list of mount dicts."""
     lines = ["{\n", "  fileSystems = {\n"]
     for m in mounts:
         opts = ""
@@ -748,7 +841,7 @@ def create_zfs_pool(pool_name, disks, raid_type="raidz1"):
         log("")
         log("Setting permissions...")
         os.chmod("/data/shared", 0o770)
-        subprocess.run(["chown", "root:openos-data", "/data/shared"],
+        subprocess.run(["chown", "root:homeserver-data", "/data/shared"],
                        timeout=5, env=ENV_WITH_PATH)
         os.chmod("/data/postgres", 0o700)
         subprocess.run(["chown", "postgres:postgres", "/data/postgres"],
@@ -803,7 +896,7 @@ def destroy_zfs_dataset(dataset_name):
 
 # ==================== SAMBA SHARE MANAGEMENT ====================
 
-SHARES_CONF = "/etc/openos/shares.json"
+SHARES_CONF = "/etc/homeserver/shares.json"
 
 
 def get_shares():
@@ -907,7 +1000,7 @@ def create_system_user(username, password=None):
         return {"ok": False, "error": "Invalid username (lowercase, 2-31 chars, start with letter)"}
     try:
         r = subprocess.run(
-            ["useradd", "-m", "-G", "openos-data", "-s", "/bin/bash", username],
+            ["useradd", "-m", "-G", "homeserver-data", "-s", "/bin/bash", username],
             capture_output=True, text=True, timeout=10, env=ENV_WITH_PATH)
         if r.returncode != 0 and "already exists" not in r.stderr:
             return {"ok": False, "error": r.stderr.strip()}
@@ -957,7 +1050,7 @@ def mount_disk(device, mountpoint, fstype, role="data"):
         log("Rebuilding system...")
         arch_r = subprocess.run(["uname", "-m"], capture_output=True, text=True, env=ENV_WITH_PATH)
         arch = arch_r.stdout.strip()
-        flake_target = "openos" if arch == "x86_64" else "openos-arm"
+        flake_target = "homeserver" if arch == "x86_64" else "homeserver-arm"
 
         proc = subprocess.Popen(
             [BASH, "-c",
@@ -972,6 +1065,7 @@ def mount_disk(device, mountpoint, fstype, role="data"):
         if proc.returncode == 0:
             log("")
             log("=== Mount configured successfully ===")
+            save_generation_note("Mount added: %s" % mountpoint)
         else:
             log("")
             log("=== Mount FAILED (exit code %d) ===" % proc.returncode)
@@ -1007,7 +1101,7 @@ def unmount_disk(mountpoint):
         log("Rebuilding system...")
         arch_r = subprocess.run(["uname", "-m"], capture_output=True, text=True, env=ENV_WITH_PATH)
         arch = arch_r.stdout.strip()
-        flake_target = "openos" if arch == "x86_64" else "openos-arm"
+        flake_target = "homeserver" if arch == "x86_64" else "homeserver-arm"
 
         proc = subprocess.Popen(
             [BASH, "-c",
@@ -1022,6 +1116,7 @@ def unmount_disk(mountpoint):
         if proc.returncode == 0:
             log("")
             log("=== Mount removed successfully ===")
+            save_generation_note("Mount removed: %s" % mountpoint)
         else:
             log("")
             log("=== Unmount FAILED (exit code %d) ===" % proc.returncode)
@@ -1084,12 +1179,12 @@ ICON_MAP = {
 
 
 def get_enabled_apps():
-    """Parse /etc/openos/apps.nix and return set of enabled app names."""
+    """Parse /etc/homeserver/apps.nix and return set of enabled app names."""
     enabled = set()
     try:
         with open(APPS_NIX) as f:
             for line in f:
-                m = re.search(r'openos\.apps\.(\w+)\.enable\s*=\s*true', line)
+                m = re.search(r'homeserver\.apps\.(\w+)\.enable\s*=\s*true', line)
                 if m:
                     enabled.add(m.group(1))
     except FileNotFoundError:
@@ -1098,10 +1193,10 @@ def get_enabled_apps():
 
 
 def write_apps_nix(enabled_set):
-    """Write /etc/openos/apps.nix from a set of app names."""
+    """Write /etc/homeserver/apps.nix from a set of app names."""
     lines = ["{\n"]
     for app in sorted(enabled_set):
-        lines.append("  openos.apps.%s.enable = true;\n" % app)
+        lines.append("  homeserver.apps.%s.enable = true;\n" % app)
     lines.append("}\n")
     with open(APPS_NIX, "w") as f:
         f.writelines(lines)
@@ -1181,7 +1276,7 @@ def install_app(app_id):
 
         arch_r = subprocess.run(["uname", "-m"], capture_output=True, text=True, env=ENV_WITH_PATH)
         arch = arch_r.stdout.strip()
-        flake_target = "openos" if arch == "x86_64" else "openos-arm"
+        flake_target = "homeserver" if arch == "x86_64" else "homeserver-arm"
 
         proc = subprocess.Popen(
             [BASH, "-c",
@@ -1196,6 +1291,7 @@ def install_app(app_id):
         if proc.returncode == 0:
             log("")
             log("=== %s installed successfully ===" % app_id)
+            save_generation_note("Installed %s" % app_id)
         else:
             log("")
             log("=== Install FAILED (exit code %d) ===" % proc.returncode)
@@ -1234,7 +1330,7 @@ def uninstall_app(app_id):
 
         arch_r = subprocess.run(["uname", "-m"], capture_output=True, text=True, env=ENV_WITH_PATH)
         arch = arch_r.stdout.strip()
-        flake_target = "openos" if arch == "x86_64" else "openos-arm"
+        flake_target = "homeserver" if arch == "x86_64" else "homeserver-arm"
 
         proc = subprocess.Popen(
             [BASH, "-c",
@@ -1249,6 +1345,7 @@ def uninstall_app(app_id):
         if proc.returncode == 0:
             log("")
             log("=== %s uninstalled successfully ===" % app_id)
+            save_generation_note("Removed %s" % app_id)
         else:
             log("")
             log("=== Uninstall FAILED (exit code %d) ===" % proc.returncode)
@@ -1298,8 +1395,8 @@ def run_setup(config):
     task_done = False
     task_name = "Initial Setup"
 
-    hostname = config.get("hostname", "openos")
-    domain = config.get("domain", "openos.local")
+    hostname = config.get("hostname", "homeserver")
+    domain = config.get("domain", "homeserver.local")
     timezone = config.get("timezone", "UTC")
     password = config.get("password", "")
     headscale_url = config.get("headscale_url", "")
@@ -1309,7 +1406,7 @@ def run_setup(config):
     def log(msg):
         task_log.append(msg)
 
-    log("=== OpenOS Initial Setup ===")
+    log("=== homeserver OS Initial Setup ===")
     log("Hostname: %s" % hostname)
     log("Domain: %s" % domain)
     log("Channel: %s" % channel)
@@ -1317,7 +1414,7 @@ def run_setup(config):
     try:
         ensure_dns()
         log("")
-        log("Cloning OpenOS repository...")
+        log("Cloning homeserver OS repository...")
         if os.path.exists(FLAKE_DIR + "/.git"):
             subprocess.run([BASH, "-c", "cd %s && git fetch --all --tags" % FLAKE_DIR],
                            env=ENV_WITH_PATH, timeout=120)
@@ -1360,14 +1457,14 @@ def run_setup(config):
 {
   networking.hostName = "%s";
   time.timeZone = "%s";
-  openos.domain = "%s";
-  openos.adminEmail = "admin@%s";
+  homeserver.domain = "%s";
+  homeserver.adminEmail = "admin@%s";
   users.users.admin = {
     isNormalUser = true;
-    extraGroups = [ "wheel" "openos-data" "networkmanager" ];
+    extraGroups = [ "wheel" "homeserver-data" "networkmanager" ];
     hashedPassword = "%s";
   };
-  openos.updates = {
+  homeserver.updates = {
     enable = true;
     channel = "%s";
     autoApply = false;
@@ -1375,11 +1472,11 @@ def run_setup(config):
 }
 """ % (hostname, timezone, domain, domain, pw_hash, channel)
 
-        with open("/etc/openos/host-config.nix", "w") as f:
+        with open("/etc/homeserver/host-config.nix", "w") as f:
             f.write(host_cfg)
 
-        if not os.path.exists("/etc/openos/apps.nix"):
-            with open("/etc/openos/apps.nix", "w") as f:
+        if not os.path.exists("/etc/homeserver/apps.nix"):
+            with open("/etc/homeserver/apps.nix", "w") as f:
                 f.write("{\n}\n")
 
         if headscale_url:
@@ -1398,11 +1495,11 @@ def run_setup(config):
                 log("You can set this up later via the admin panel.")
 
         log("")
-        log("Building OpenOS system... (this may take 10-30 minutes)")
+        log("Building homeserver OS system... (this may take 10-30 minutes)")
 
         arch_r = subprocess.run(["uname", "-m"], capture_output=True, text=True, env=ENV_WITH_PATH)
         arch = arch_r.stdout.strip()
-        flake_target = "openos" if arch == "x86_64" else "openos-arm"
+        flake_target = "homeserver" if arch == "x86_64" else "homeserver-arm"
 
         proc = subprocess.Popen(
             [BASH, "-c",
@@ -1424,17 +1521,18 @@ def run_setup(config):
         log("")
         log("Build successful! Marking as configured...")
 
-        os.makedirs("/var/lib/openos", exist_ok=True)
-        with open("/var/lib/openos/configured", "w") as f:
+        os.makedirs("/var/lib/homeserver", exist_ok=True)
+        with open("/var/lib/homeserver/configured", "w") as f:
             f.write(time.strftime("%Y-%m-%dT%H:%M:%S"))
 
         version = target if not target.startswith("origin/") else "main"
-        with open("/var/lib/openos/version", "w") as f:
+        with open("/var/lib/homeserver/version", "w") as f:
             f.write(version)
 
         log("")
         log("=== Initial setup complete! ===")
-        log("Rebooting into full OpenOS in 10 seconds...")
+        save_generation_note("Initial setup: %s (%s)" % (hostname, channel))
+        log("Rebooting into full homeserver OS in 10 seconds...")
 
         subprocess.Popen(
             [BASH, "-c", "sleep 10 && systemctl reboot -i || reboot -f"],
@@ -1450,7 +1548,7 @@ def run_setup(config):
 SETUP_HTML = r"""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OpenOS Setup</title>
+<title>homeserver OS Setup</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0a0a0a;color:#e5e5e5;min-height:100vh;display:flex;align-items:center;justify-content:center}
@@ -1473,7 +1571,7 @@ input:focus,select:focus{outline:none;border-color:#f97316}
 .st.ok{background:#052e16;color:#22c55e}.st.err{background:#2d0a0a;color:#ef4444}.st.wk{background:#1a1000;color:#f97316}
 </style></head><body>
 <div class="c">
-<h1>OpenOS Server Setup</h1>
+<h1>homeserver OS Setup</h1>
 <p class="sub">First-boot configuration. Set up your server below.</p>
 <div class="box">
 <div class="row"><span class="lbl">IP</span><span class="val" id="ip">...</span></div>
@@ -1482,8 +1580,8 @@ input:focus,select:focus{outline:none;border-color:#f97316}
 </div>
 <form id="f">
 <div class="step"><h2>1. Server</h2>
-<label>Hostname</label><input name="hostname" value="openos" required>
-<label>Domain</label><input name="domain" value="openos.local">
+<label>Hostname</label><input name="hostname" value="homeserver" required>
+<label>Domain</label><input name="domain" value="homeserver.local">
 <label>Timezone</label><input name="timezone" value="Europe/Berlin">
 <label>Admin Password</label><input name="password" type="password" required minlength="8">
 </div>
@@ -1499,7 +1597,7 @@ input:focus,select:focus{outline:none;border-color:#f97316}
 <option value="beta">Beta</option>
 <option value="nightly" selected>Nightly</option>
 </select></div>
-<button type="submit" class="btn" id="btn">Install OpenOS</button>
+<button type="submit" class="btn" id="btn">Install homeserver OS</button>
 </form>
 <div id="log"></div>
 <div class="st" id="st"></div>
@@ -1539,7 +1637,7 @@ fetch('/api/setup',{method:'POST',headers:{'Content-Type':'application/json'},bo
 DASHBOARD_HTML = r"""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OpenOS Admin</title>
+<title>homeserver OS Admin</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0a0a0a;color:#e5e5e5;min-height:100vh}
@@ -1630,7 +1728,7 @@ td{padding:.4rem;border-bottom:1px solid #222}
 .modal-actions{display:flex;gap:.5rem;justify-content:flex-end;margin-top:.5rem}
 </style></head><body>
 <nav>
-<h1>OpenOS</h1>
+<h1>homeserver OS</h1>
 <a href="#dashboard" class="active" onclick="showPage('dashboard',this)">Dashboard</a>
 <a href="#storage" onclick="showPage('storage',this)">Storage</a>
 <a href="#network" onclick="showPage('network',this)">Network</a>
@@ -1706,25 +1804,43 @@ td{padding:.4rem;border-bottom:1px solid #222}
 
 <!-- ==================== SYSTEM ==================== -->
 <div class="page" id="p-system">
-<div class="card"><h2>NixOS Generations</h2>
-<table><thead><tr><th>#</th><th>Date</th><th>Status</th><th>Actions</th></tr></thead>
-<tbody id="gens"><tr><td colspan="4">Loading...</td></tr></tbody></table>
+
+<div class="card" id="update-status-card">
+<div style="display:flex;justify-content:space-between;align-items:center">
+<h2 style="margin:0">System Update</h2>
+<span id="update-badge" class="badge" style="display:none"></span>
 </div>
-<div class="card"><h2>Update</h2>
-<p style="color:#888;font-size:.8rem;margin-bottom:.8rem">Pull the latest version from GitHub and apply it live — no reboot needed.</p>
-<div class="actions">
-<button class="btn" onclick="doApply()">Update &amp; Apply Now</button>
-<button class="btn btn-gray" onclick="doFetch()">Fetch Only</button>
-<button class="btn btn-gray" onclick="doUpdate()">Safe Update (reboot)</button>
+<div id="update-status-info" style="margin-top:.8rem;color:#888;font-size:.85rem">Checking for updates...</div>
+<div class="actions" style="margin-top:1rem">
+<button class="btn" id="btn-apply" onclick="doApply()">Update &amp; Apply</button>
+<button class="btn btn-gray" onclick="doUpdate()">Safe Update (Reboot)</button>
+<button class="btn btn-gray" onclick="doFetch()">Check for Updates</button>
 </div>
-<div class="log-box" id="updatelog"></div>
+<div id="update-progress" style="display:none;margin-top:1rem">
+<div style="display:flex;align-items:center;gap:.8rem;margin-bottom:.5rem">
+<span id="update-phase" style="font-size:.85rem;color:#f97316;font-weight:600">Pulling...</span>
+<span id="update-result" style="font-size:.85rem;font-weight:600;display:none"></span>
 </div>
+<div class="bar-track" style="height:8px"><div class="bar-fill green" id="update-bar" style="width:0%;transition:width .5s"></div></div>
+<details style="margin-top:.8rem">
+<summary style="cursor:pointer;color:#666;font-size:.8rem;user-select:none">Build-Ausgabe anzeigen</summary>
+<div class="log-box" id="updatelog" style="display:block;margin-top:.5rem;max-height:300px"></div>
+</details>
+</div>
+</div>
+
+<div class="card">
+<h2>NixOS Generations</h2>
+<div id="gens" style="margin-top:.5rem">Loading...</div>
+</div>
+
 <div class="card"><h2>Terminal</h2>
 <div style="background:#000;border:1px solid #333;border-radius:4px;padding:.8rem;font-family:monospace;font-size:.85rem;min-height:100px;max-height:250px;overflow-y:auto;white-space:pre-wrap;color:#0f0" id="term">$ </div>
 <div style="display:flex;gap:.5rem;margin-top:.5rem">
 <input type="text" id="cmd" placeholder="Enter command..." style="flex:1;padding:.5rem;background:#0a0a0a;border:1px solid #444;border-radius:4px;color:#fff;font-size:.9rem">
 <button class="btn btn-sm" onclick="runCmd()">Run</button>
 </div></div>
+
 </div>
 
 <!-- ==================== MOUNT DIALOG ==================== -->
@@ -1864,6 +1980,7 @@ if(el)el.className='active';
 if(id==='apps')loadApps();
 if(id==='storage')loadStorage();
 if(id==='network')loadNetwork();
+if(id==='system'){loadUpdateStatus();loadGenerations();}
 };
 
 function load(){
@@ -2372,19 +2489,106 @@ loadApps();
 }
 
 /* ==================== SYSTEM ==================== */
+var updateTimer=null;
+
+function loadUpdateStatus(){
+fetch('/api/update-status').then(function(r){return r.json()}).then(function(s){
+var badge=document.getElementById('update-badge');
+var info=document.getElementById('update-status-info');
+var h='';
+if(s.nixos_version)h+='<div class="row"><span class="lbl">NixOS</span><span class="val">'+s.nixos_version+'</span></div>';
+if(s.current_generation)h+='<div class="row"><span class="lbl">Generation</span><span class="val">#'+s.current_generation+'</span></div>';
+if(s.local_ref)h+='<div class="row"><span class="lbl">Commit</span><span class="val">'+s.local_ref+(s.dirty?' <span class="warn">(dirty)</span>':'')+'</span></div>';
+if(s.last_update){
+var d=s.last_update.split(' ')[0]||s.last_update;
+h+='<div class="row"><span class="lbl">Letztes Update</span><span class="val">'+d+'</span></div>';
+}
+if(s.up_to_date){
+badge.className='badge badge-ok';badge.textContent='Up to date';badge.style.display='inline-block';
+}else{
+badge.className='badge badge-pending';badge.textContent=s.commits_behind?s.commits_behind+' Commits behind':'Update verfügbar';badge.style.display='inline-block';
+}
+info.innerHTML=h||'<span style="color:#888">Status nicht verfügbar</span>';
+});
+}
+
+function loadGenerations(){
 fetch('/api/generations').then(function(r){return r.json()}).then(function(gens){
-if(!gens||!gens.length||gens[0].error){document.getElementById('gens').innerHTML='<tr><td colspan="4">No generations found</td></tr>';return;}
+var el=document.getElementById('gens');
+if(!gens||!gens.length||gens[0].error){el.innerHTML='<div style="color:#888">Keine Generations gefunden.</div>';return;}
+gens.sort(function(a,b){return b.generation-a.generation;});
 var h='';
 for(var i=0;i<gens.length;i++){var g=gens[i];
-h=h+'<tr'+(g.current?' class="cur"':'')+'><td>'+g.generation+'</td><td>'+g.date+'</td>';
-h=h+'<td>'+(g.current?'<span class="badge badge-ok">active</span>':'')+'</td>';
-h=h+'<td>'+(g.current?'':'<button class="btn btn-sm" onclick="rollback('+g.generation+')">Activate</button>')+'</td></tr>';
+var isCur=g.current;
+h+='<div style="display:flex;align-items:center;gap:.8rem;padding:.6rem .5rem;border-bottom:1px solid #222'+(isCur?';background:#0a2a0a':'')+'">';
+h+='<span style="min-width:32px;font-family:monospace;color:'+(isCur?'#22c55e':'#888')+';font-weight:600">#'+g.generation+'</span>';
+h+='<div style="flex:1;min-width:0">';
+h+='<div style="display:flex;align-items:center;gap:.5rem">';
+if(isCur)h+='<span class="badge badge-ok">aktiv</span>';
+h+='<span style="font-size:.85rem;color:#aaa">'+g.date+'</span>';
+if(g.nixos_version)h+='<span style="font-size:.75rem;color:#555;font-family:monospace">'+g.nixos_version+'</span>';
+h+='</div>';
+if(g.note)h+='<div style="font-size:.8rem;color:#888;margin-top:.2rem">'+g.note+'</div>';
+else if(g.kernel)h+='<div style="font-size:.8rem;color:#555;margin-top:.2rem">Kernel: '+g.kernel+'</div>';
+h+='</div>';
+if(!isCur)h+='<button class="btn btn-sm btn-gray" onclick="rollback('+g.generation+')" style="white-space:nowrap">Aktivieren</button>';
+h+='</div>';
 }
-document.getElementById('gens').innerHTML=h;
+el.innerHTML=h;
 });
+}
+loadUpdateStatus();
+loadGenerations();
+
+function detectPhase(text){
+if(!text)return {phase:'Starte...',pct:5};
+var lines=text.split('\n');
+var last='';
+for(var i=lines.length-1;i>=0;i--){if(lines[i].trim()){last=lines[i];break;}}
+var full=text.toLowerCase();
+if(full.indexOf('successfully')>=0||full.indexOf('complete')>=0)return{phase:'Fertig',pct:100,ok:true};
+if(full.indexOf('failed')>=0||full.indexOf('error')>=0&&full.indexOf('=== ')>=0)return{phase:'Fehlgeschlagen',pct:100,ok:false};
+if(full.indexOf('activating the configuration')>=0||full.indexOf('setting up /etc')>=0||full.indexOf('restarting systemd')>=0||full.indexOf('reloading the following')>=0)return{phase:'Aktivierung...',pct:85};
+if(full.indexOf('building the system configuration')>=0||full.indexOf("building '/nix/store")>=0||full.indexOf('updating grub')>=0)return{phase:'Baue System...',pct:50};
+if(full.indexOf('pulling')>=0||full.indexOf('already up to date')>=0||full.indexOf('git pull')>=0)return{phase:'Pulling...',pct:15};
+if(full.indexOf('ensuring dns')>=0||full.indexOf('building and switching')>=0)return{phase:'Vorbereitung...',pct:25};
+return{phase:'Starte...',pct:10};
+}
+
+function pollUpdate(){
+var logEl=document.getElementById('updatelog');
+var phaseEl=document.getElementById('update-phase');
+var barEl=document.getElementById('update-bar');
+var resultEl=document.getElementById('update-result');
+var n=parseInt(logEl.getAttribute('data-n')||'0');
+fetch('/api/task-log?from='+n).then(function(r){return r.json()}).then(function(d){
+if(d.lines&&d.lines.length>0){
+for(var i=0;i<d.lines.length;i++)logEl.textContent+=d.lines[i]+'\n';
+logEl.setAttribute('data-n',String(n+d.lines.length));logEl.scrollTop=logEl.scrollHeight;
+}
+var p=detectPhase(logEl.textContent);
+phaseEl.textContent=p.phase;
+barEl.style.width=p.pct+'%';
+if(p.pct>=100){
+barEl.className='bar-fill '+(p.ok?'green':'red');
+}
+if(d.done&&d.lines.length===0){
+clearInterval(updateTimer);updateTimer=null;
+document.getElementById('btn-apply').disabled=false;
+phaseEl.style.display='none';
+resultEl.style.display='inline';
+if(p.ok!==false){
+resultEl.className='ok';resultEl.textContent='Update erfolgreich angewendet';
+}else{
+resultEl.className='fail';resultEl.textContent='Update fehlgeschlagen';
+}
+loadUpdateStatus();loadGenerations();
+}
+});
+}
 
 window.rollback=function(gen){
-if(!confirm('Switch to generation '+gen+'? The server will reboot.'))return;
+if(!confirm('Generation '+gen+' aktivieren? Der Server wird neugestartet.'))return;
 fetch('/api/rollback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({generation:gen})})
 .then(function(r){return r.json()}).then(function(d){alert(d.message||JSON.stringify(d));});
 };
@@ -2393,36 +2597,49 @@ var url=prompt('Headscale server URL:');if(!url)return;
 fetch('/api/tailscale-setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({headscale_url:url})})
 .then(function(r){return r.json()}).then(function(d){alert(d.message||JSON.stringify(d));load();});
 };
-window.doApply=function(){
+
+function startUpdateUI(){
+var prog=document.getElementById('update-progress');
 var logEl=document.getElementById('updatelog');
-logEl.style.display='block';logEl.textContent='Pulling and applying...\n';logEl.setAttribute('data-n','0');
+var phaseEl=document.getElementById('update-phase');
+var barEl=document.getElementById('update-bar');
+var resultEl=document.getElementById('update-result');
+prog.style.display='block';
+logEl.textContent='';logEl.setAttribute('data-n','0');
+phaseEl.textContent='Starte...';phaseEl.style.display='inline';
+barEl.style.width='5%';barEl.className='bar-fill green';
+resultEl.style.display='none';
+document.getElementById('btn-apply').disabled=true;
+}
+
+window.doApply=function(){
+startUpdateUI();
 fetch('/api/apply',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
-if(d.ok){var t=setInterval(function(){
-var nn=parseInt(logEl.getAttribute('data-n')||'0');
-fetch('/api/task-log?from='+nn).then(function(r){return r.json()}).then(function(dd){
-if(dd.lines&&dd.lines.length>0){for(var i=0;i<dd.lines.length;i++)logEl.textContent=logEl.textContent+dd.lines[i]+'\n';
-logEl.setAttribute('data-n',String(nn+dd.lines.length));logEl.scrollTop=logEl.scrollHeight;}
-if(dd.done&&dd.lines.length===0)clearInterval(t);
-});
-},2000);}else{logEl.textContent=logEl.textContent+(d.error||JSON.stringify(d))+'\n';}
+if(d.ok){updateTimer=setInterval(pollUpdate,2000);}
+else{
+var logEl=document.getElementById('updatelog');
+logEl.textContent+=(d.error||JSON.stringify(d))+'\n';
+document.getElementById('btn-apply').disabled=false;
+}
 });
 };
 window.doUpdate=function(){
-var logEl=document.getElementById('updatelog');
-logEl.style.display='block';logEl.textContent='Starting update...\n';logEl.setAttribute('data-n','0');
+startUpdateUI();
+document.getElementById('update-phase').textContent='Safe Update...';
 fetch('/api/safe-update',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
-if(d.ok){var t=setInterval(function(){
-var nn=parseInt(logEl.getAttribute('data-n')||'0');
-fetch('/api/task-log?from='+nn).then(function(r){return r.json()}).then(function(dd){
-if(dd.lines&&dd.lines.length>0){for(var i=0;i<dd.lines.length;i++)logEl.textContent=logEl.textContent+dd.lines[i]+'\n';
-logEl.setAttribute('data-n',String(nn+dd.lines.length));logEl.scrollTop=logEl.scrollHeight;}
-if(dd.done&&dd.lines.length===0)clearInterval(t);
-});
-},2000);}else{logEl.textContent=logEl.textContent+JSON.stringify(d)+'\n';}
+if(d.ok){updateTimer=setInterval(pollUpdate,2000);}
+else{
+var logEl=document.getElementById('updatelog');
+logEl.textContent+=JSON.stringify(d)+'\n';
+document.getElementById('btn-apply').disabled=false;
+}
 });
 };
 window.doFetch=function(){
-fetch('/api/fetch',{method:'POST'}).then(function(r){return r.json()}).then(function(d){alert(d.message||JSON.stringify(d));});
+fetch('/api/fetch',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
+if(d.ok){loadUpdateStatus();}
+alert(d.message||JSON.stringify(d));
+});
 };
 window.runCmd=function(){
 var inp=document.getElementById('cmd'),out=document.getElementById('term');
@@ -2462,6 +2679,8 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
             self._json(get_tailscale_status())
         elif self.path == "/api/generations":
             self._json(get_generations())
+        elif self.path == "/api/update-status":
+            self._json(get_update_status())
         elif self.path == "/api/apps":
             self._json(get_apps())
         elif self.path == "/api/storage":
@@ -2523,7 +2742,7 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
             ensure_dns()
             t = threading.Thread(
                 target=run_task_bg,
-                args=("Safe Update", [BASH, "/etc/openos/safe-update.sh", "HEAD"]),
+                args=("Safe Update", [BASH, "/etc/homeserver/safe-update.sh", "HEAD"]),
                 daemon=True)
             t.start()
             self._json({"ok": True})
@@ -2565,7 +2784,7 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
 
                     arch_r = subprocess.run(["uname", "-m"], capture_output=True, text=True, env=ENV_WITH_PATH)
                     arch = arch_r.stdout.strip()
-                    flake_target = "openos" if arch == "x86_64" else "openos-arm"
+                    flake_target = "homeserver" if arch == "x86_64" else "homeserver-arm"
 
                     log("")
                     log("Ensuring DNS for nix-daemon...")
@@ -2584,7 +2803,7 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
                     if proc.returncode == 0:
                         log("")
                         log("=== Update applied successfully ===")
-                        log("Refresh the page to see changes.")
+                        save_generation_note("System update (live)")
                     else:
                         log("")
                         log("=== Update FAILED (exit code %d) ===" % proc.returncode)
@@ -2605,7 +2824,7 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
                 return
             try:
                 r = subprocess.run(
-                    [BASH, "/etc/openos/rollback-to.sh", str(gen)],
+                    [BASH, "/etc/homeserver/rollback-to.sh", str(gen)],
                     capture_output=True, text=True, timeout=300, env=ENV_WITH_PATH)
                 self._json({"ok": True, "message": "Switched to generation %s. Output: %s" % (gen, r.stdout.strip())})
             except Exception as e:
@@ -2802,7 +3021,7 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    print("OpenOS Admin Panel on port %d" % PORT)
+    print("homeserver OS Admin Panel on port %d" % PORT)
     mode = "SETUP" if is_setup_mode() else "DASHBOARD"
     print("Mode: %s" % mode)
     print("URL: http://%s/" % get_ip())

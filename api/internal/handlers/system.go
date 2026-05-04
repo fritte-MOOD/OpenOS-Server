@@ -10,8 +10,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/openos/api/internal/models"
-	"github.com/openos/api/internal/nixgen"
+	"github.com/homeserver/api/internal/models"
+	"github.com/homeserver/api/internal/nixgen"
 )
 
 var startTime = time.Now()
@@ -44,7 +44,7 @@ func (h *SystemHandler) Status(w http.ResponseWriter, r *http.Request) {
 }
 
 func readVersionFile() string {
-	for _, p := range []string{"/var/lib/openos/version", "/etc/openos/version"} {
+	for _, p := range []string{"/var/lib/homeserver/version", "/etc/homeserver/version"} {
 		data, err := os.ReadFile(p)
 		if err == nil {
 			return strings.TrimSpace(string(data))
@@ -54,7 +54,7 @@ func readVersionFile() string {
 }
 
 func readModeFile() string {
-	if _, err := os.Stat("/var/lib/openos/configured"); err == nil {
+	if _, err := os.Stat("/var/lib/homeserver/configured"); err == nil {
 		return "full"
 	}
 	return "setup"

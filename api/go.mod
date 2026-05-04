@@ -1,4 +1,4 @@
-module github.com/openos/api
+module github.com/homeserver/api
 
 go 1.22
 

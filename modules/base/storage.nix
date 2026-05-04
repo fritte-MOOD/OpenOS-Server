@@ -1,6 +1,6 @@
 { config, lib, pkgs, ... }:
 let
-  dataDir = config.openos.dataDir;
+  dataDir = config.homeserver.dataDir;
 in {
   # ZFS support
   boot.supportedFilesystems = [ "zfs" ];
@@ -24,8 +24,8 @@ in {
     openFirewall = true;
     settings = {
       global = {
-        workgroup = "OPENOS";
-        "server string" = "OpenOS File Server";
+        workgroup = "HOMESERVER";
+        "server string" = "homeserver OS File Server";
         security = "user";
         "map to guest" = "Bad User";
         "logging" = "systemd";
@@ -38,7 +38,7 @@ in {
   systemd.tmpfiles.rules = [
     "d ${dataDir}                0755 root        root        -"
     "d ${dataDir}/postgres       0700 postgres     postgres    -"
-    "d ${dataDir}/shared         0770 root        openos-data -"
+    "d ${dataDir}/shared         0770 root        homeserver-data -"
     "d ${dataDir}/apps           0755 root        root        -"
     "d ${dataDir}/apps/nextcloud 0750 nextcloud   nginx       -"
     "d ${dataDir}/apps/ollama    0750 ollama      ollama      -"
@@ -53,12 +53,12 @@ in {
   ];
 
   # Backup timer — daily PostgreSQL dumps
-  systemd.services.openos-backup = {
-    description = "OpenOS daily backup";
+  systemd.services.homeserver-backup = {
+    description = "homeserver OS daily backup";
     serviceConfig = {
       Type = "oneshot";
       User = "root";
-      ExecStart = pkgs.writeShellScript "openos-backup" ''
+      ExecStart = pkgs.writeShellScript "homeserver-backup" ''
         set -euo pipefail
         BACKUP_DIR="${dataDir}/backups/daily"
         TIMESTAMP=$(date +%Y%m%d_%H%M%S)
@@ -80,8 +80,8 @@ in {
     };
   };
 
-  systemd.timers.openos-backup = {
-    description = "Daily OpenOS backup timer";
+  systemd.timers.homeserver-backup = {
+    description = "Daily homeserver OS backup timer";
     wantedBy = [ "timers.target" ];
     timerConfig = {
       OnCalendar = "*-*-* 03:00:00";

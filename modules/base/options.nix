@@ -1,15 +1,15 @@
 { config, lib, ... }:
 {
-  options.openos = {
+  options.homeserver = {
     domain = lib.mkOption {
       type = lib.types.str;
-      default = "openos.local";
-      description = "Base domain for this OpenOS server instance.";
+      default = "homeserver.local";
+      description = "Base domain for this homeserver OS instance.";
     };
 
     adminEmail = lib.mkOption {
       type = lib.types.str;
-      default = "admin@openos.local";
+      default = "admin@homeserver.local";
       description = "Admin email for ACME certificates and notifications.";
     };
 

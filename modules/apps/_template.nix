@@ -1,23 +1,23 @@
-# Template for new OpenOS app modules.
+# Template for new homeserver OS app modules.
 # Copy this file and replace "myapp" with your app name.
 #
 # Convention:
-#   - options go under openos.apps.<name>
+#   - options go under homeserver.apps.<name>
 #   - data directory: /data/apps/<name>
 #   - PostgreSQL database (if needed): declared via ensureDatabases
-#   - registry entry: set openos.appRegistry.<name>
+#   - registry entry: set homeserver.appRegistry.<name>
 #
 { config, lib, pkgs, ... }:
 let
-  cfg = config.openos.apps.myapp;
-  dataDir = "${config.openos.dataDir}/apps/myapp";
+  cfg = config.homeserver.apps.myapp;
+  dataDir = "${config.homeserver.dataDir}/apps/myapp";
 in {
-  options.openos.apps.myapp = {
+  options.homeserver.apps.myapp = {
     enable = lib.mkEnableOption "My App description";
 
     domain = lib.mkOption {
       type = lib.types.str;
-      default = "myapp.${config.openos.domain}";
+      default = "myapp.${config.homeserver.domain}";
       description = "Domain for My App.";
     };
 
@@ -55,7 +55,7 @@ in {
     };
 
     # --- Registry entry ---
-    openos.appRegistry.myapp = {
+    homeserver.appRegistry.myapp = {
       name = "My App";
       description = "Short description of what this app does";
       icon = "puzzle";

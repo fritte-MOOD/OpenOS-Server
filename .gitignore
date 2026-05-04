@@ -9,7 +9,7 @@ secrets/*.pem
 !secrets/secrets.nix
 
 # Go
-api/openos-api
+api/homeserver-api
 api/vendor/
 
 # Editor

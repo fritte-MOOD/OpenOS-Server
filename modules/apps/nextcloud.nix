@@ -1,14 +1,14 @@
 { config, lib, pkgs, ... }:
 let
-  cfg = config.openos.apps.nextcloud;
-  dataDir = "${config.openos.dataDir}/apps/nextcloud";
+  cfg = config.homeserver.apps.nextcloud;
+  dataDir = "${config.homeserver.dataDir}/apps/nextcloud";
 in {
-  options.openos.apps.nextcloud = {
+  options.homeserver.apps.nextcloud = {
     enable = lib.mkEnableOption "Nextcloud file sharing and collaboration";
 
     domain = lib.mkOption {
       type = lib.types.str;
-      default = "files.${config.openos.domain}";
+      default = "files.${config.homeserver.domain}";
       description = "Domain for Nextcloud.";
     };
 
@@ -34,7 +34,7 @@ in {
         dbhost = "/run/postgresql";
         dbname = "nextcloud";
         dbuser = "nextcloud";
-        adminpassFile = "/etc/openos/secrets/nextcloud-admin-pass";
+        adminpassFile = "/etc/homeserver/secrets/nextcloud-admin-pass";
       };
 
       datadir = dataDir;
@@ -65,7 +65,7 @@ in {
       enableACME = true;
     };
 
-    openos.appRegistry.nextcloud = {
+    homeserver.appRegistry.nextcloud = {
       name = "Nextcloud";
       description = "File sharing, calendar, contacts, and collaboration";
       icon = "cloud";

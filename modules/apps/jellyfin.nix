@@ -1,15 +1,15 @@
 { config, lib, pkgs, ... }:
 let
-  cfg = config.openos.apps.jellyfin;
-  dataDir = "${config.openos.dataDir}/apps/jellyfin";
-  mediaDir = "${config.openos.dataDir}/shared/media";
+  cfg = config.homeserver.apps.jellyfin;
+  dataDir = "${config.homeserver.dataDir}/apps/jellyfin";
+  mediaDir = "${config.homeserver.dataDir}/shared/media";
 in {
-  options.openos.apps.jellyfin = {
+  options.homeserver.apps.jellyfin = {
     enable = lib.mkEnableOption "Jellyfin media server";
 
     domain = lib.mkOption {
       type = lib.types.str;
-      default = "media.${config.openos.domain}";
+      default = "media.${config.homeserver.domain}";
       description = "Domain for Jellyfin.";
     };
 
@@ -28,10 +28,10 @@ in {
     };
 
     systemd.tmpfiles.rules = [
-      "d ${mediaDir}        0770 jellyfin openos-data -"
-      "d ${mediaDir}/movies 0770 jellyfin openos-data -"
-      "d ${mediaDir}/music  0770 jellyfin openos-data -"
-      "d ${mediaDir}/shows  0770 jellyfin openos-data -"
+      "d ${mediaDir}        0770 jellyfin homeserver-data -"
+      "d ${mediaDir}/movies 0770 jellyfin homeserver-data -"
+      "d ${mediaDir}/music  0770 jellyfin homeserver-data -"
+      "d ${mediaDir}/shows  0770 jellyfin homeserver-data -"
     ];
 
     services.nginx.virtualHosts."${cfg.domain}" = {
@@ -44,7 +44,7 @@ in {
       };
     };
 
-    openos.appRegistry.jellyfin = {
+    homeserver.appRegistry.jellyfin = {
       name = "Jellyfin";
       description = "Stream movies, music, and shows to your community";
       icon = "tv";

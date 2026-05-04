@@ -3,8 +3,8 @@ package handlers
 import (
 	"net/http"
 
-	"github.com/openos/api/internal/models"
-	"github.com/openos/api/internal/nixgen"
+	"github.com/homeserver/api/internal/models"
+	"github.com/homeserver/api/internal/nixgen"
 )
 
 type VersionHandler struct {

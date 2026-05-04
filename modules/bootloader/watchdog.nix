@@ -2,9 +2,9 @@
 {
   # Watchdog: after every boot, verify system health.
   # If a pending generation fails the check, auto-rollback via GRUB.
-  systemd.services.openos-watchdog = {
-    description = "OpenOS Bootloader Watchdog — auto-rollback on failure";
-    after = [ "openos-bootloader.target" ];
+  systemd.services.homeserver-watchdog = {
+    description = "homeserver OS Bootloader Watchdog — auto-rollback on failure";
+    after = [ "homeserver-bootloader.target" ];
     wantedBy = [ "multi-user.target" ];
 
     serviceConfig = {
@@ -15,7 +15,7 @@
     path = with pkgs; [ systemd coreutils grub2 gawk nix ];
 
     script = ''
-      STATE_DIR="/var/lib/openos"
+      STATE_DIR="/var/lib/homeserver"
       PENDING="$STATE_DIR/pending-generation"
 
       if [ ! -f "$PENDING" ]; then
@@ -41,17 +41,17 @@
       }
 
       check_service "tailscaled.service"
-      check_service "openos-admin-panel.service"
+      check_service "homeserver-admin-panel.service"
       check_service "sshd.service"
 
-      for svc in postgresql.service nginx.service openos-api.service; do
+      for svc in postgresql.service nginx.service homeserver-api.service; do
         if systemctl list-unit-files "$svc" &>/dev/null; then
           check_service "$svc"
         fi
       done
 
       REQUIRED_OK=0
-      for svc in tailscaled.service openos-admin-panel.service sshd.service; do
+      for svc in tailscaled.service homeserver-admin-panel.service sshd.service; do
         if systemctl is-active --quiet "$svc" 2>/dev/null; then
           REQUIRED_OK=$((REQUIRED_OK + 1))
         fi
@@ -71,14 +71,14 @@
       echo "Health check PASSED ($CHECKS_PASSED/$CHECKS_TOTAL services OK, $REQUIRED_OK/3 critical OK)."
       echo "Auto-confirming generation $PENDING_GEN..."
 
-      ${pkgs.bash}/bin/bash /etc/openos/confirm-generation.sh
+      ${pkgs.bash}/bin/bash /etc/homeserver/confirm-generation.sh
     '';
   };
 
   # Continuous background monitor: if Tailscale drops for too long, alert
-  systemd.services.openos-monitor = {
-    description = "OpenOS continuous health monitor";
-    after = [ "openos-bootloader.target" ];
+  systemd.services.homeserver-monitor = {
+    description = "homeserver OS continuous health monitor";
+    after = [ "homeserver-bootloader.target" ];
     wantedBy = [ "multi-user.target" ];
 
     serviceConfig = {
@@ -101,7 +101,7 @@
           echo "$(date -Iseconds) WARNING: Tailscale down ($FAIL_COUNT consecutive failures)"
           if [ "$FAIL_COUNT" -ge 10 ]; then
             echo "$(date -Iseconds) CRITICAL: Tailscale down for 10+ minutes"
-            echo "$(date -Iseconds) tailscale_down_10min" >> /var/lib/openos/alerts.log
+            echo "$(date -Iseconds) tailscale_down_10min" >> /var/lib/homeserver/alerts.log
             systemctl restart tailscaled.service || true
             FAIL_COUNT=0
           fi

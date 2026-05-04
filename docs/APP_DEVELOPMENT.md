@@ -1,10 +1,10 @@
-# OpenOS App Development Guide
+# homeserver OS App Development Guide
 
-This guide explains how to create apps for OpenOS Server.
+This guide explains how to create apps for homeserver OS.
 
-## What is an OpenOS App?
+## What is a homeserver OS App?
 
-An OpenOS app is a **NixOS module** that follows a standard interface. When a user
+A homeserver OS app is a **NixOS module** that follows a standard interface. When a user
 clicks "Install" in the Global Stack client, the Go API daemon enables your module
 and triggers a `nixos-rebuild switch`.
 
@@ -23,15 +23,15 @@ Every app module must:
 ```nix
 { config, lib, pkgs, ... }:
 let
-  cfg = config.openos.apps.myapp;
-  dataDir = "${config.openos.dataDir}/apps/myapp";
+  cfg = config.homeserver.apps.myapp;
+  dataDir = "${config.homeserver.dataDir}/apps/myapp";
 in {
-  # 1. Declare options under openos.apps.<name>
-  options.openos.apps.myapp = {
+  # 1. Declare options under homeserver.apps.<name>
+  options.homeserver.apps.myapp = {
     enable = lib.mkEnableOption "My App";
     domain = lib.mkOption {
       type = lib.types.str;
-      default = "myapp.${config.openos.domain}";
+      default = "myapp.${config.homeserver.domain}";
     };
     port = lib.mkOption {
       type = lib.types.port;
@@ -73,7 +73,7 @@ in {
     };
 
     # 6. Registry entry (shown in client UI)
-    openos.appRegistry.myapp = {
+    homeserver.appRegistry.myapp = {
       name = "My App";
       description = "What it does in one sentence";
       icon = "puzzle";          # Lucide icon name
@@ -127,7 +127,7 @@ The registry entry is what the Global Stack client reads to show your app:
 In `flake.nix`, add your module to the `extraModules` list:
 
 ```nix
-openos = mkHost "default" {
+homeserver = mkHost "default" {
   extraModules = [
     ./modules/apps/registry.nix
     ./modules/apps/myapp.nix    # <-- add here
@@ -140,8 +140,8 @@ openos = mkHost "default" {
 
 ```bash
 # Dry-run build (no actual changes)
-nixos-rebuild dry-activate --flake .#openos
+nixos-rebuild dry-activate --flake .#homeserver
 
 # Build in a VM
-nixos-rebuild build-vm --flake .#openos
+nixos-rebuild build-vm --flake .#homeserver
 ```

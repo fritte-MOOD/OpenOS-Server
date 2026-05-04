@@ -1,5 +1,5 @@
 {
-  description = "OpenOS Server — self-administering NixOS community server";
+  description = "homeserver OS — self-administering NixOS community server";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
@@ -54,11 +54,11 @@
 
   in {
     nixosConfigurations = {
-      openos = mkHost "x86_64-linux" "default" {
+      homeserver = mkHost "x86_64-linux" "default" {
         extraModules = appModules;
       };
 
-      openos-arm = mkHost "aarch64-linux" "default" {
+      homeserver-arm = mkHost "aarch64-linux" "default" {
         extraModules = appModules;
       };
     };
@@ -67,8 +67,8 @@
     let
       pkgs = nixpkgs.legacyPackages.${system};
     in {
-      openos-api = pkgs.buildGoModule {
-        pname = "openos-api";
+      homeserver-api = pkgs.buildGoModule {
+        pname = "homeserver-api";
         version = "0.1.0";
         src = ./api;
         vendorHash = null;
@@ -79,8 +79,8 @@
         modules = [
           "${nixpkgs}/nixos/modules/installer/cd-dvd/installation-cd-minimal.nix"
           ({ pkgs, lib, ... }: {
-            isoImage.isoBaseName = "openos-installer";
-            isoImage.volumeID = "OPENOS";
+            isoImage.isoBaseName = "homeserver-installer";
+            isoImage.volumeID = "HOMESERVER";
 
             environment.systemPackages = with pkgs; [
               git parted dosfstools e2fsprogs
@@ -88,31 +88,31 @@
             ];
 
             environment.etc."profile.local".text = ''
-              if [ "$(tty)" = "/dev/tty1" ] && [ -z "$OPENOS_INSTALLER_RUNNING" ]; then
-                export OPENOS_INSTALLER_RUNNING=1
+              if [ "$(tty)" = "/dev/tty1" ] && [ -z "$HOMESERVER_INSTALLER_RUNNING" ]; then
+                export HOMESERVER_INSTALLER_RUNNING=1
                 echo ""
-                echo "Welcome to OpenOS Server Installer"
+                echo "Welcome to homeserver OS Installer"
                 echo "==================================="
                 echo ""
-                echo "  1) Install OpenOS (interactive)"
-                echo "  2) Install OpenOS (from network)"
+                echo "  1) Install homeserver OS (interactive)"
+                echo "  2) Install homeserver OS (from network)"
                 echo "  3) Drop to shell"
                 echo ""
                 read -rp "Choice [1]: " choice
                 case "''${choice:-1}" in
-                  1) sudo bash /etc/openos-installer/install.sh ;;
-                  2) sudo bash /etc/openos-installer/net-install.sh ;;
-                  3) echo "Type 'bash /etc/openos-installer/install.sh' to start." ;;
+                  1) sudo bash /etc/homeserver-installer/install.sh ;;
+                  2) sudo bash /etc/homeserver-installer/net-install.sh ;;
+                  3) echo "Type 'bash /etc/homeserver-installer/install.sh' to start." ;;
                 esac
               fi
             '';
 
-            environment.etc."openos-installer/install.sh" = {
+            environment.etc."homeserver-installer/install.sh" = {
               source = ./scripts/install.sh;
               mode = "0755";
             };
 
-            environment.etc."openos-installer/net-install.sh" = {
+            environment.etc."homeserver-installer/net-install.sh" = {
               source = ./scripts/net-install.sh;
               mode = "0755";
             };

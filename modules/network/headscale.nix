@@ -1,9 +1,9 @@
 { config, lib, pkgs, ... }:
 let
-  cfg = config.openos.headscale;
-  domain = config.openos.domain;
+  cfg = config.homeserver.headscale;
+  domain = config.homeserver.domain;
 in {
-  options.openos.headscale = {
+  options.homeserver.headscale = {
     enable = lib.mkEnableOption "self-hosted Headscale coordination server";
 
     domain = lib.mkOption {

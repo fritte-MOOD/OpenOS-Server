@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/openos/api/internal/handlers"
+	"github.com/homeserver/api/internal/handlers"
 )
 
 type contextKey string

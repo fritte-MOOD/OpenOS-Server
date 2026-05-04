@@ -12,7 +12,7 @@
       allowedUDPPorts = [ ];
 
       # Tailscale traffic is always trusted
-      trustedInterfaces = [ config.openos.tailscaleInterface ];
+      trustedInterfaces = [ config.homeserver.tailscaleInterface ];
 
       # Log denied packets for debugging
       logReversePathDrops = true;

@@ -1,10 +1,10 @@
-# OpenOS Server — Architecture
+# homeserver OS — Architecture
 
 > For the full project roadmap and planning decisions, see [ROADMAP.md](ROADMAP.md).
 
 ## Overview
 
-OpenOS Server is a NixOS-based, self-administering community server OS. It provides:
+homeserver OS is a NixOS-based, self-administering community server OS. It provides:
 
 - **Shared infrastructure** for communities (housing co-ops, clubs, NGOs, etc.)
 - **One-click app installation** via an admin panel web UI
@@ -35,8 +35,8 @@ OpenOS Server is a NixOS-based, self-administering community server OS. It provi
 ├─────────────────────────────────────────────┤
 │  Application Layer                          │
 │  ┌────────────┐ ┌──────────┐ ┌───────────┐ │
-│  │ openos-api │ │ Nginx    │ │PostgreSQL │ │
-│  │ (Go)       │ │ (proxy)  │ │ (shared)  │ │
+│  │ homeserver │ │ Nginx    │ │PostgreSQL │ │
+│  │ -api (Go)  │ │ (proxy)  │ │ (shared)  │ │
 │  └────────────┘ └──────────┘ └───────────┘ │
 │  ┌─────────────┐ ┌──────────┐ ┌──────────┐ │
 │  │ Nextcloud   │ │ Ollama   │ │Syncthing │ │
@@ -62,16 +62,16 @@ The bootloader is a set of systemd services that start **before** the applicatio
 ### Service Ordering
 
 ```
-openos-bootloader.target (starts first)
+homeserver-bootloader.target (starts first)
 ├── tailscaled.service     — remote access
 ├── sshd.service           — shell access
-├── openos-admin-panel     — web UI (port 80)
-└── openos-watchdog        — health monitor
+├── homeserver-admin-panel — web UI (port 80)
+└── homeserver-watchdog    — health monitor
 
 multi-user.target (starts after)
 ├── postgresql.service
 ├── nginx.service
-├── openos-api.service
+├── homeserver-api.service
 └── app services...
 ```
 
@@ -89,7 +89,7 @@ If any application-layer service crashes, the bootloader layer keeps running. Yo
 
 ### First Boot
 
-On first boot (no `/etc/openos/configured` file), the admin panel shows a **setup wizard**:
+On first boot (no `/etc/homeserver/configured` file), the admin panel shows a **setup wizard**:
 - Hostname, domain, timezone, admin password
 - Headscale URL for Tailscale
 - Version channel (stable/beta/nightly)
@@ -98,7 +98,7 @@ After setup, the system builds the configured generation and reboots.
 
 ## Two Interfaces
 
-OpenOS has two separate user-facing interfaces for two different audiences:
+homeserver OS has two separate user-facing interfaces for two different audiences:
 
 ```
 Server-Admin (1 person)              Community Members (many)
@@ -129,7 +129,7 @@ Global Stack is an installable app like Jellyfin or Nextcloud.
    Malware detection is rule-based (AIDE). Firewall is default-deny.
 
 5. **One-click apps**: Each app is a NixOS module under `modules/apps/`.
-   The admin panel toggles `openos.apps.<name>.enable = true` and rebuilds.
+   The admin panel toggles `homeserver.apps.<name>.enable = true` and rebuilds.
 
 6. **Safe versioning**: Every system change creates a NixOS generation.
    Updates use GRUB one-time boot and automatic rollback. Even a completely
@@ -143,7 +143,7 @@ Global Stack is an installable app like Jellyfin or Nextcloud.
 
 ## Versioning & Update System
 
-OpenOS uses NixOS generations as its versioning backbone.
+homeserver OS uses NixOS generations as its versioning backbone.
 
 ```
 ┌─────────────────────────────────────────────────────┐

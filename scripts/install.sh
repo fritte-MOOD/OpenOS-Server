@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────────────────────
-# OpenOS Server Installer
+# homeserver OS Installer
 #
-# Installs the full OpenOS system with built-in bootloader.
+# Installs the full homeserver OS system with built-in bootloader.
 # After first boot, the admin panel runs in setup mode (http://<ip>)
 # to configure hostname, password, and Tailscale.
 #
@@ -22,7 +22,7 @@ BLUE='\033[0;34m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-log()  { echo -e "${GREEN}[OpenOS]${NC} $*"; }
+log()  { echo -e "${GREEN}[homeserver]${NC} $*"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 err()  { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 step() { echo -e "\n${BLUE}${BOLD}── $* ──${NC}"; }
@@ -46,17 +46,17 @@ ask() {
 clear
 echo -e "${BLUE}"
 cat << 'BANNER'
-   ___                   ___  ____
-  / _ \ _ __   ___ _ __ / _ \/ ___|
- | | | | '_ \ / _ \ '_ \ | | \___ \
- | |_| | |_) |  __/ | | | |_| |___) |
-  \___/| .__/ \___|_| |_|\___/|____/
-       |_|
+  _                                                    ___  ____
+ | |__   ___  _ __ ___   ___  ___  ___ _ ____   _____ _ __ / _ \/ ___|
+ | '_ \ / _ \| '_ ` _ \ / _ \/ __|/ _ \ '__\ \ / / _ \ '__| | | \___ \
+ | | | | (_) | | | | | |  __/\__ \  __/ |   \ V /  __/ |  | |_| |___) |
+ |_| |_|\___/|_| |_| |_|\___||___/\___|_|    \_/ \___|_|   \___/|____/
+
   Community Server — Installer v1.0
 BANNER
 echo -e "${NC}"
 echo ""
-log "This installs OpenOS with a built-in bootloader."
+log "This installs homeserver OS with a built-in bootloader."
 log "After reboot, open the admin panel in your browser to finish setup."
 echo ""
 echo -e "${YELLOW}Features:${NC}"
@@ -81,8 +81,8 @@ fi
 ARCH=$(uname -m)
 FLAKE_TARGET=""
 case "$ARCH" in
-  x86_64)  FLAKE_TARGET="openos" ;;
-  aarch64) FLAKE_TARGET="openos-arm" ;;
+  x86_64)  FLAKE_TARGET="homeserver" ;;
+  aarch64) FLAKE_TARGET="homeserver-arm" ;;
   *)       err "Unsupported architecture: $ARCH" ;;
 esac
 log "Architecture: $ARCH (target: $FLAKE_TARGET)"
@@ -235,26 +235,26 @@ mkdir -p /mnt/data/{postgres,shared,apps,backups/{daily,weekly}}
 log "Mounted."
 
 # ─────────────────────────────────────────────
-# Clone OpenOS
+# Clone homeserver OS
 # ─────────────────────────────────────────────
-step "Downloading OpenOS"
+step "Downloading homeserver OS"
 
-OPENOS_DIR="/mnt/etc/openos"
-mkdir -p "$OPENOS_DIR"
+HOMESERVER_DIR="/mnt/etc/homeserver"
+mkdir -p "$HOMESERVER_DIR"
 
 REPO_URL="https://github.com/fritte-MOOD/OpenOS-Server.git"
 
 log "Cloning repository..."
-if git clone "$REPO_URL" "$OPENOS_DIR/flake" 2>&1; then
+if git clone "$REPO_URL" "$HOMESERVER_DIR/flake" 2>&1; then
   log "Repository cloned."
 else
   warn "Could not clone from GitHub."
-  if [ -d "/etc/openos-installer/flake" ]; then
+  if [ -d "/etc/homeserver-installer/flake" ]; then
     log "Copying from installer media..."
-    cp -r /etc/openos-installer/flake "$OPENOS_DIR/flake"
-  elif ls -d /run/media/*/openos-flake &>/dev/null; then
+    cp -r /etc/homeserver-installer/flake "$HOMESERVER_DIR/flake"
+  elif ls -d /run/media/*/homeserver-flake &>/dev/null; then
     log "Found on USB..."
-    cp -r /run/media/*/openos-flake "$OPENOS_DIR/flake"
+    cp -r /run/media/*/homeserver-flake "$HOMESERVER_DIR/flake"
   else
     err "No flake source available. Internet required."
   fi
@@ -264,29 +264,29 @@ log "Detecting hardware..."
 nixos-generate-config --root /mnt
 
 if [ -f /mnt/etc/nixos/hardware-configuration.nix ]; then
-  cp /mnt/etc/nixos/hardware-configuration.nix "$OPENOS_DIR/hardware-configuration.nix"
+  cp /mnt/etc/nixos/hardware-configuration.nix "$HOMESERVER_DIR/hardware-configuration.nix"
   log "Hardware configuration saved."
 fi
 
-cat > "$OPENOS_DIR/apps.nix" << 'EOF'
+cat > "$HOMESERVER_DIR/apps.nix" << 'EOF'
 {
 }
 EOF
 
 # Generate hostId for ZFS (8 hex chars from machine-id or random)
 HOST_ID=$(head -c 4 /dev/urandom | od -A none -t x4 | tr -d ' ')
-cat > "$OPENOS_DIR/host-id.nix" << EOF
+cat > "$HOMESERVER_DIR/host-id.nix" << EOF
 { networking.hostId = "$HOST_ID"; }
 EOF
 log "Generated ZFS hostId: $HOST_ID"
 
-mkdir -p /mnt/var/lib/openos
-echo "0.1.0-dev" > /mnt/var/lib/openos/version
+mkdir -p /mnt/var/lib/homeserver
+echo "0.1.0-dev" > /mnt/var/lib/homeserver/version
 
 # ─────────────────────────────────────────────
 # Install
 # ─────────────────────────────────────────────
-step "Installing OpenOS"
+step "Installing homeserver OS"
 
 log "Installing the full system with built-in bootloader."
 log "This includes: Tailscale, SSH, admin panel, watchdog, PostgreSQL, Nginx, and all apps."
@@ -297,13 +297,13 @@ nixos-install \
   --root /mnt \
   --no-root-passwd \
   --impure \
-  --flake "$OPENOS_DIR/flake#$FLAKE_TARGET" \
-  2>&1 | tee /tmp/openos-install.log
+  --flake "$HOMESERVER_DIR/flake#$FLAKE_TARGET" \
+  2>&1 | tee /tmp/homeserver-install.log
 
 INSTALL_EXIT=${PIPESTATUS[0]}
 
 if [ "$INSTALL_EXIT" -ne 0 ]; then
-  err "Installation failed. See /tmp/openos-install.log"
+  err "Installation failed. See /tmp/homeserver-install.log"
 fi
 
 # ─────────────────────────────────────────────
@@ -311,7 +311,7 @@ fi
 # ─────────────────────────────────────────────
 echo ""
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${GREEN}  OpenOS installed successfully!${NC}"
+echo -e "${GREEN}  homeserver OS installed successfully!${NC}"
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 log "What happens next:"
@@ -324,7 +324,7 @@ echo ""
 echo -e "  The admin panel is ${BOLD}always running${NC} — even after updates."
 echo -e "  If an update breaks something, the system auto-rolls back."
 echo ""
-log "Install log: /tmp/openos-install.log"
+log "Install log: /tmp/homeserver-install.log"
 echo ""
 read -rp "Press Enter to reboot..." < "$TTY_IN" || true
 systemctl reboot -i || reboot -f

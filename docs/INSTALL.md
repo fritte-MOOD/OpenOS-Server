@@ -1,8 +1,8 @@
-# OpenOS Server — Installation Guide
+# homeserver OS — Installation Guide
 
 ## Overview
 
-OpenOS installs as a complete system with a **built-in bootloader**. There is no separate seed or bootstrap phase — the installer puts the full system on disk in one step.
+homeserver OS installs as a complete system with a **built-in bootloader**. There is no separate seed or bootstrap phase — the installer puts the full system on disk in one step.
 
 After first boot, the admin panel opens in **setup mode** to configure hostname, password, and Tailscale. Once configured, the bootloader layer (Tailscale, SSH, admin panel, watchdog) runs permanently alongside your apps.
 
@@ -22,7 +22,7 @@ If an update ever breaks something, the system automatically rolls back within m
 
 ## Installation Methods
 
-### Method A: OpenOS Installer ISO (Recommended)
+### Method A: homeserver OS Installer ISO (Recommended)
 
 Build the ISO, flash it to USB, boot from it.
 
@@ -32,17 +32,17 @@ Build the ISO, flash it to USB, boot from it.
 git clone https://github.com/fritte-MOOD/OpenOS-Server.git
 cd OpenOS-Server
 nix build .#installer-iso
-# ISO at: result/iso/openos-installer-*.iso
+# ISO at: result/iso/homeserver-installer-*.iso
 ```
 
 **2. Flash to USB:**
 
 ```bash
 # macOS
-sudo dd if=result/iso/openos-installer-*.iso of=/dev/diskN bs=4M status=progress
+sudo dd if=result/iso/homeserver-installer-*.iso of=/dev/diskN bs=4M status=progress
 
 # Linux
-sudo dd if=result/iso/openos-installer-*.iso of=/dev/sdX bs=4M status=progress
+sudo dd if=result/iso/homeserver-installer-*.iso of=/dev/sdX bs=4M status=progress
 ```
 
 **3. Boot from USB** and follow the interactive installer.
@@ -59,9 +59,9 @@ curl -sL https://raw.githubusercontent.com/fritte-MOOD/OpenOS-Server/main/script
 
 ```bash
 # Partition disk, mount at /mnt, then:
-git clone https://github.com/fritte-MOOD/OpenOS-Server.git /mnt/etc/openos/flake
+git clone https://github.com/fritte-MOOD/OpenOS-Server.git /mnt/etc/homeserver/flake
 nixos-generate-config --root /mnt
-nixos-install --root /mnt --flake /mnt/etc/openos/flake#openos
+nixos-install --root /mnt --flake /mnt/etc/homeserver/flake#homeserver
 ```
 
 ## What Happens During Installation
@@ -71,7 +71,7 @@ nixos-install --root /mnt --flake /mnt/etc/openos/flake#openos
    - 32 GB root (NixOS system with generations)
    - Rest → `/data` (persistent data, survives reinstalls)
 
-2. **Installs the full OpenOS:**
+2. **Installs the full homeserver OS:**
    - Bootloader layer: Tailscale, SSH, admin panel, watchdog
    - Application layer: PostgreSQL, Nginx, Go API, all app modules
    - GRUB with saved-default and auto-fallback
@@ -155,16 +155,16 @@ git clone https://github.com/fritte-MOOD/OpenOS-Server.git
 cd OpenOS-Server
 
 # Dry-run NixOS build
-nix build .#nixosConfigurations.openos.config.system.build.toplevel --dry-run
+nix build .#nixosConfigurations.homeserver.config.system.build.toplevel --dry-run
 
 # Build Go API
-cd api && go build -o openos-api . && cd ..
+cd api && go build -o homeserver-api . && cd ..
 
 # Build installer ISO
 nix build .#packages.x86_64-linux.installer-iso
 
 # Test in VM
-nixos-rebuild build-vm --flake .#openos
+nixos-rebuild build-vm --flake .#homeserver
 ```
 
 ### Create a Release
@@ -180,15 +180,15 @@ git push origin v1.0.0
 ### Admin panel not loading
 ```bash
 ssh admin@<server-ip>
-sudo systemctl status openos-admin-panel
-sudo journalctl -u openos-admin-panel -f
+sudo systemctl status homeserver-admin-panel
+sudo journalctl -u homeserver-admin-panel -f
 ```
 
 ### Build fails during setup
 ```bash
-sudo journalctl -u openos-admin-panel -n 200
+sudo journalctl -u homeserver-admin-panel -n 200
 # Or SSH in and rebuild manually:
-sudo nixos-rebuild boot --flake /etc/openos/flake#openos --impure
+sudo nixos-rebuild boot --flake /etc/homeserver/flake#homeserver --impure
 ```
 
 ### Rollback after failed update

@@ -4,21 +4,47 @@
   # This module provides helper scripts for the Go API and admin panel.
 
   # Generation listing — JSON output for the API
-  environment.etc."openos/list-generations.sh" = {
+  environment.etc."homeserver/list-generations.sh" = {
     mode = "0755";
     text = ''
       #!/usr/bin/env bash
       set -euo pipefail
 
-      ${pkgs.nix}/bin/nix-env --list-generations --profile /nix/var/nix/profiles/system \
-        | ${pkgs.gawk}/bin/awk '
+      PROFILE="/nix/var/nix/profiles/system"
+      NOTES="/var/lib/homeserver/generation-notes.json"
+      NOTES_DATA="{}"
+      if [ -f "$NOTES" ]; then
+        NOTES_DATA=$(${pkgs.coreutils}/bin/cat "$NOTES")
+      fi
+
+      ${pkgs.nix}/bin/nix-env --list-generations --profile "$PROFILE" \
+        | ${pkgs.gawk}/bin/awk -v profile="$PROFILE" -v notes="$NOTES_DATA" '
           BEGIN { printf "[" }
           NR > 1 { printf "," }
           {
             gen = $1
             date = $2 " " $3
             current = ($NF == "(current)") ? "true" : "false"
-            printf "{\"generation\":%s,\"date\":\"%s\",\"current\":%s}", gen, date, current
+
+            link = profile "-" gen "-link"
+            nixos_ver = ""
+            kernel = ""
+
+            verfile = link "/nixos-version"
+            if ((getline line < verfile) > 0) nixos_ver = line
+            close(verfile)
+
+            cmd = "readlink " link "/kernel 2>/dev/null | grep -oP \"linux-[0-9][^/]*\" || true"
+            cmd | getline kernel
+            close(cmd)
+
+            note = ""
+            cmd2 = "echo '"'"'" notes "'"'"' | ${pkgs.jq}/bin/jq -r \".\\\"" gen "\\\" // \\\"\\\"\""
+            cmd2 | getline note
+            close(cmd2)
+
+            printf "{\"generation\":%s,\"date\":\"%s\",\"current\":%s", gen, date, current
+            printf ",\"nixos_version\":\"%s\",\"kernel\":\"%s\",\"note\":\"%s\"}", nixos_ver, kernel, note
           }
           END { printf "]" }
         '
@@ -26,7 +52,7 @@
   };
 
   # Rollback to a specific generation
-  environment.etc."openos/rollback-to.sh" = {
+  environment.etc."homeserver/rollback-to.sh" = {
     mode = "0755";
     text = ''
       #!/usr/bin/env bash
@@ -54,6 +80,6 @@
     '';
   };
 
-  # Version is tracked at /var/lib/openos/version (writable at runtime).
+  # Version is tracked at /var/lib/homeserver/version (writable at runtime).
   # The installer writes the initial value there.
 }

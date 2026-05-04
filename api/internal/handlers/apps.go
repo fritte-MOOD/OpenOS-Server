@@ -8,8 +8,8 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/openos/api/internal/models"
-	"github.com/openos/api/internal/nixgen"
+	"github.com/homeserver/api/internal/models"
+	"github.com/homeserver/api/internal/nixgen"
 )
 
 type AppHandler struct {
@@ -200,7 +200,7 @@ func (h *AppHandler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// registryEntry mirrors the JSON structure from /etc/openos/registry.json
+// registryEntry mirrors the JSON structure from /etc/homeserver/registry.json
 type registryEntry struct {
 	Name        string   `json:"name"`
 	Description string   `json:"description"`

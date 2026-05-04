@@ -1,8 +1,8 @@
-# OpenOS Server
+# homeserver OS
 
 A self-administering community server operating system built on NixOS.
 
-OpenOS makes it easy to run a private community server — file sharing, chat, video streaming, LLM inference, and more — without needing a system administrator. Install it on any PC, manage everything through a web interface.
+homeserver OS makes it easy to run a private community server — file sharing, chat, video streaming, LLM inference, and more — without needing a system administrator. Install it on any PC, manage everything through a web interface.
 
 ## Quick Start
 
@@ -15,7 +15,7 @@ OpenOS makes it easy to run a private community server — file sharing, chat, v
 
 ### Install
 
-1. Flash the OpenOS installer to a USB stick
+1. Flash the homeserver OS installer to a USB stick
 2. Boot the server from USB
 3. Follow the on-screen prompts (select disk, confirm)
 4. Reboot → open `http://<server-ip>` in your browser
@@ -26,7 +26,7 @@ See **[docs/USB-INSTALL-GUIDE.md](docs/USB-INSTALL-GUIDE.md)** for the full guid
 
 ## How It Works
 
-OpenOS installs the full system in one step. Every installation includes a **built-in bootloader layer** that is always running, even if an update breaks other services:
+homeserver OS installs the full system in one step. Every installation includes a **built-in bootloader layer** that is always running, even if an update breaks other services:
 
 ```
 ┌─────────────────────────────────────────────────┐
@@ -75,9 +75,9 @@ You can never brick the server remotely. Even a completely broken update is auto
 └──────────────────┬──────────────────────────┘
                    │ REST API over Tailscale
 ┌──────────────────▼──────────────────────────┐
-│  OpenOS Server (NixOS)                      │
+│  homeserver OS (NixOS)                      │
 │  ┌────────────┐ ┌─────────┐ ┌───────────┐  │
-│  │ openos-api │ │ Nginx   │ │ Tailscale │  │
+│  │ homeserver-api │ │ Nginx   │ │ Tailscale │  │
 │  │ (Go)       │ │ (proxy) │ │ (VPN)     │  │
 │  └─────┬──────┘ └────┬────┘ └───────────┘  │
 │        │              │                      │
@@ -110,7 +110,7 @@ You can never brick the server remotely. Even a completely broken update is auto
 - [USB Installation Guide](docs/USB-INSTALL-GUIDE.md) — step-by-step
 - [Full Installation Reference](docs/INSTALL.md) — all methods
 - [Architecture](docs/ARCHITECTURE.md) — system design and API reference
-- [App Development](docs/APP_DEVELOPMENT.md) — build your own OpenOS apps
+- [App Development](docs/APP_DEVELOPMENT.md) — build your own homeserver OS apps
 
 ## Development
 
@@ -120,13 +120,13 @@ git clone https://github.com/fritte-MOOD/OpenOS-Server.git
 cd OpenOS-Server
 
 # Build the Go API
-cd api && go build -o openos-api . && cd ..
+cd api && go build -o homeserver-api . && cd ..
 
 # Build the installer ISO
 nix build .#installer-iso
 
 # Test in a VM
-nixos-rebuild build-vm --flake .#openos
+nixos-rebuild build-vm --flake .#homeserver
 ```
 
 ## License

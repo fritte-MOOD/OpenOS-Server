@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────────────────────
-# OpenOS Server Network Installer
+# homeserver OS Network Installer
 #
 # Same as install.sh but downloads everything from the internet.
 # Use from any NixOS live USB:
@@ -15,7 +15,7 @@ BLUE='\033[0;34m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-log()  { echo -e "${GREEN}[OpenOS]${NC} $*"; }
+log()  { echo -e "${GREEN}[homeserver]${NC} $*"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 err()  { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 step() { echo -e "\n${BLUE}${BOLD}── $* ──${NC}"; }
@@ -39,17 +39,17 @@ ask() {
 clear
 echo -e "${BLUE}"
 cat << 'BANNER'
-   ___                   ___  ____
-  / _ \ _ __   ___ _ __ / _ \/ ___|
- | | | | '_ \ / _ \ '_ \ | | \___ \
- | |_| | |_) |  __/ | | | |_| |___) |
-  \___/| .__/ \___|_| |_|\___/|____/
-       |_|
+  _                                                    ___  ____
+ | |__   ___  _ __ ___   ___  ___  ___ _ ____   _____ _ __ / _ \/ ___|
+ | '_ \ / _ \| '_ ` _ \ / _ \/ __|/ _ \ '__\ \ / / _ \ '__| | | \___ \
+ | | | | (_) | | | | | |  __/\__ \  __/ |   \ V /  __/ |  | |_| |___) |
+ |_| |_|\___/|_| |_| |_|\___||___/\___|_|    \_/ \___|_|   \___/|____/
+
   Community Server — Network Installer v1.0
 BANNER
 echo -e "${NC}"
 echo ""
-log "Network installer — downloads OpenOS directly from GitHub."
+log "Network installer — downloads homeserver OS directly from GitHub."
 echo ""
 
 step "Pre-flight checks"
@@ -65,8 +65,8 @@ fi
 ARCH=$(uname -m)
 FLAKE_TARGET=""
 case "$ARCH" in
-  x86_64)  FLAKE_TARGET="openos" ;;
-  aarch64) FLAKE_TARGET="openos-arm" ;;
+  x86_64)  FLAKE_TARGET="homeserver" ;;
+  aarch64) FLAKE_TARGET="homeserver-arm" ;;
   *)       err "Unsupported: $ARCH" ;;
 esac
 log "Architecture: $ARCH"
@@ -171,29 +171,29 @@ mount "$BOOT_PART" /mnt/boot
 mount "$DATA_PART" /mnt/data
 mkdir -p /mnt/data/{postgres,shared,apps,backups/{daily,weekly}}
 
-step "Downloading OpenOS"
+step "Downloading homeserver OS"
 
-OPENOS_DIR="/mnt/etc/openos"
-mkdir -p "$OPENOS_DIR"
+HOMESERVER_DIR="/mnt/etc/homeserver"
+mkdir -p "$HOMESERVER_DIR"
 
 REPO_URL="https://github.com/fritte-MOOD/OpenOS-Server.git"
-git clone "$REPO_URL" "$OPENOS_DIR/flake" 2>&1 || err "Failed to clone repository."
+git clone "$REPO_URL" "$HOMESERVER_DIR/flake" 2>&1 || err "Failed to clone repository."
 log "Repository cloned."
 
 nixos-generate-config --root /mnt
 if [ -f /mnt/etc/nixos/hardware-configuration.nix ]; then
-  cp /mnt/etc/nixos/hardware-configuration.nix "$OPENOS_DIR/hardware-configuration.nix"
+  cp /mnt/etc/nixos/hardware-configuration.nix "$HOMESERVER_DIR/hardware-configuration.nix"
 fi
 
-cat > "$OPENOS_DIR/apps.nix" << 'EOF'
+cat > "$HOMESERVER_DIR/apps.nix" << 'EOF'
 {
 }
 EOF
 
-mkdir -p /mnt/var/lib/openos
-echo "0.1.0-dev" > /mnt/var/lib/openos/version
+mkdir -p /mnt/var/lib/homeserver
+echo "0.1.0-dev" > /mnt/var/lib/homeserver/version
 
-step "Installing OpenOS"
+step "Installing homeserver OS"
 
 log "Installing full system with built-in bootloader..."
 
@@ -201,15 +201,15 @@ nixos-install \
   --root /mnt \
   --no-root-passwd \
   --impure \
-  --flake "$OPENOS_DIR/flake#$FLAKE_TARGET" \
-  2>&1 | tee /tmp/openos-install.log
+  --flake "$HOMESERVER_DIR/flake#$FLAKE_TARGET" \
+  2>&1 | tee /tmp/homeserver-install.log
 
 INSTALL_EXIT=${PIPESTATUS[0]}
-[ "$INSTALL_EXIT" -eq 0 ] || err "Installation failed. See /tmp/openos-install.log"
+[ "$INSTALL_EXIT" -eq 0 ] || err "Installation failed. See /tmp/homeserver-install.log"
 
 echo ""
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${GREEN}  OpenOS installed successfully!${NC}"
+echo -e "${GREEN}  homeserver OS installed successfully!${NC}"
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 log "Next steps:"

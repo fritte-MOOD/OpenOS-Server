@@ -2,9 +2,9 @@
 {
   # The app registry is a pure data structure that the Go API reads
   # to know which apps are available, their metadata, and current state.
-  # Each app module sets its own entry via config.openos.apps.<name>.
+  # Each app module sets its own entry via config.homeserver.apps.<name>.
 
-  options.openos.appRegistry = lib.mkOption {
+  options.homeserver.appRegistry = lib.mkOption {
     type = lib.types.attrsOf (lib.types.submodule {
       options = {
         name = lib.mkOption { type = lib.types.str; };
@@ -22,11 +22,11 @@
       };
     });
     default = {};
-    description = "Registry of all available OpenOS apps and their metadata.";
+    description = "Registry of all available homeserver OS apps and their metadata.";
   };
 
   config = {
     # Write the registry as JSON so the Go API can read it
-    environment.etc."openos/registry.json".text = builtins.toJSON config.openos.appRegistry;
+    environment.etc."homeserver/registry.json".text = builtins.toJSON config.homeserver.appRegistry;
   };
 }

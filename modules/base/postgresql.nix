@@ -1,6 +1,6 @@
 { config, lib, pkgs, ... }:
 let
-  dataDir = config.openos.dataDir;
+  dataDir = config.homeserver.dataDir;
 in {
   services.postgresql = {
     enable = true;
@@ -39,24 +39,24 @@ in {
       log_disconnections = true;
     };
 
-    ensureDatabases = [ "openos" "openos-api" ];
+    ensureDatabases = [ "homeserver" "homeserver-api" ];
     ensureUsers = [
       {
-        name = "openos-api";
+        name = "homeserver-api";
         ensureDBOwnership = true;
       }
     ];
 
-    # Grant openos-api full access to the openos database
+    # Grant homeserver-api full access to the homeserver database
     initialScript = pkgs.writeText "pg-init.sql" ''
-      GRANT ALL PRIVILEGES ON DATABASE openos TO "openos-api";
+      GRANT ALL PRIVILEGES ON DATABASE homeserver TO "homeserver-api";
     '';
   };
 
   # PostgreSQL backup integration
   services.postgresqlBackup = {
     enable = true;
-    databases = [ "openos" ];
+    databases = [ "homeserver" ];
     location = "${dataDir}/backups/daily";
     startAt = "*-*-* 02:30:00";
     compression = "zstd";

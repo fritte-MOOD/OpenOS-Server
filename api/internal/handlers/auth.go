@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/openos/api/internal/models"
+	"github.com/homeserver/api/internal/models"
 )
 
 // ValidateSession checks a session token against the shared PostgreSQL database.

@@ -1,14 +1,14 @@
 { config, lib, pkgs, ... }:
 let
-  cfg = config.openos.apps.vaultwarden;
-  dataDir = "${config.openos.dataDir}/apps/vaultwarden";
+  cfg = config.homeserver.apps.vaultwarden;
+  dataDir = "${config.homeserver.dataDir}/apps/vaultwarden";
 in {
-  options.openos.apps.vaultwarden = {
+  options.homeserver.apps.vaultwarden = {
     enable = lib.mkEnableOption "Vaultwarden password manager";
 
     domain = lib.mkOption {
       type = lib.types.str;
-      default = "vault.${config.openos.domain}";
+      default = "vault.${config.homeserver.domain}";
       description = "Domain for Vaultwarden.";
     };
 
@@ -50,7 +50,7 @@ in {
       };
     };
 
-    openos.appRegistry.vaultwarden = {
+    homeserver.appRegistry.vaultwarden = {
       name = "Vaultwarden";
       description = "Community password manager — Bitwarden-compatible";
       icon = "lock";
