@@ -273,6 +273,13 @@ cat > "$OPENOS_DIR/apps.nix" << 'EOF'
 }
 EOF
 
+# Generate hostId for ZFS (8 hex chars from machine-id or random)
+HOST_ID=$(head -c 4 /dev/urandom | od -A none -t x4 | tr -d ' ')
+cat > "$OPENOS_DIR/host-id.nix" << EOF
+{ networking.hostId = "$HOST_ID"; }
+EOF
+log "Generated ZFS hostId: $HOST_ID"
+
 mkdir -p /mnt/var/lib/openos
 echo "0.1.0-dev" > /mnt/var/lib/openos/version
 

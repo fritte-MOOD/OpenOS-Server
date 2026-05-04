@@ -2,6 +2,38 @@
 let
   dataDir = config.openos.dataDir;
 in {
+  # ZFS support
+  boot.supportedFilesystems = [ "zfs" ];
+  boot.zfs.forceImportRoot = false;
+  boot.zfs.extraPools = [ ];
+  services.zfs.autoScrub.enable = true;
+  services.zfs.autoScrub.interval = "weekly";
+  services.zfs.trim.enable = true;
+
+  # ZFS + disk management tools
+  environment.systemPackages = with pkgs; [
+    zfs
+    smartmontools
+    parted
+    samba
+  ];
+
+  # Samba for user file sharing
+  services.samba = {
+    enable = true;
+    openFirewall = true;
+    settings = {
+      global = {
+        workgroup = "OPENOS";
+        "server string" = "OpenOS File Server";
+        security = "user";
+        "map to guest" = "Bad User";
+        "logging" = "systemd";
+        "log level" = "1";
+      };
+    };
+  };
+
   # Create the /data directory tree on activation
   systemd.tmpfiles.rules = [
     "d ${dataDir}                0755 root        root        -"

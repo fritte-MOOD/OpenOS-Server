@@ -407,6 +407,425 @@ def get_unmounted_partitions():
     return candidates
 
 
+# ==================== ZFS POOL MANAGEMENT ====================
+
+def get_available_disks():
+    """Find whole disks not used by the system (no mounted partitions, not the boot disk)."""
+    available = []
+    try:
+        r = subprocess.run(
+            ["lsblk", "-J", "-b", "-o", "NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,MODEL,SERIAL,ROTA,RM"],
+            capture_output=True, text=True, timeout=10, env=ENV_WITH_PATH)
+        data = json.loads(r.stdout)
+        for dev in data.get("blockdevices", []):
+            if dev.get("type") != "disk":
+                continue
+            name = dev.get("name", "")
+            if name.startswith("loop") or name.startswith("sr") or name.startswith("fd"):
+                continue
+            in_use = False
+            children = dev.get("children", [])
+            if children:
+                for child in children:
+                    mp = child.get("mountpoint") or ""
+                    if mp in ("/", "/boot", "/nix", "/nix/store"):
+                        in_use = True
+                        break
+            else:
+                mp = dev.get("mountpoint") or ""
+                if mp in ("/", "/boot", "/nix", "/nix/store"):
+                    in_use = True
+            if in_use:
+                continue
+            # Check if disk is part of an existing zpool
+            try:
+                zr = subprocess.run(
+                    ["zpool", "status", "-P"],
+                    capture_output=True, text=True, timeout=5, env=ENV_WITH_PATH)
+                if "/dev/" + name in zr.stdout:
+                    in_use = True
+            except Exception:
+                pass
+            if in_use:
+                continue
+            available.append({
+                "device": "/dev/" + name,
+                "name": name,
+                "size": dev.get("size", 0),
+                "model": (dev.get("model") or "").strip(),
+                "serial": (dev.get("serial") or "").strip(),
+                "rotational": dev.get("rota", False),
+                "removable": dev.get("rm", False),
+                "has_partitions": len(children) > 0,
+            })
+    except Exception:
+        pass
+    return available
+
+
+def get_zfs_pools():
+    """Get status of all ZFS pools."""
+    pools = []
+    try:
+        r = subprocess.run(
+            ["zpool", "list", "-H", "-o", "name,size,alloc,free,health,fragmentation,capacity"],
+            capture_output=True, text=True, timeout=10, env=ENV_WITH_PATH)
+        if r.returncode != 0:
+            return pools
+        for line in r.stdout.strip().splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 7:
+                pools.append({
+                    "name": parts[0],
+                    "size": parts[1],
+                    "allocated": parts[2],
+                    "free": parts[3],
+                    "health": parts[4],
+                    "fragmentation": parts[5],
+                    "capacity_pct": parts[6].rstrip("%"),
+                })
+    except Exception:
+        pass
+
+    for pool in pools:
+        try:
+            r = subprocess.run(
+                ["zpool", "status", pool["name"]],
+                capture_output=True, text=True, timeout=10, env=ENV_WITH_PATH)
+            pool["status_detail"] = r.stdout.strip()
+            if "raidz1" in r.stdout:
+                pool["type"] = "raidz1"
+            elif "raidz2" in r.stdout:
+                pool["type"] = "raidz2"
+            elif "mirror" in r.stdout:
+                pool["type"] = "mirror"
+            else:
+                pool["type"] = "stripe"
+            disks = []
+            for sline in r.stdout.splitlines():
+                sline = sline.strip()
+                if sline.startswith("/dev/") or (sline and sline.split()[0] in
+                    [d for d in os.listdir("/dev") if d.startswith("sd") or d.startswith("nvme")]):
+                    disks.append(sline.split()[0])
+            pool["disks"] = disks
+            pool["disk_count"] = len(disks)
+        except Exception:
+            pool["type"] = "unknown"
+            pool["disks"] = []
+            pool["disk_count"] = 0
+
+    return pools
+
+
+def get_zfs_datasets(pool_name=None):
+    """List ZFS datasets with usage info."""
+    datasets = []
+    try:
+        cmd = ["zfs", "list", "-H", "-o", "name,used,avail,refer,mountpoint,quota,compression"]
+        if pool_name:
+            cmd.append(pool_name)
+            cmd.append("-r")
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=10, env=ENV_WITH_PATH)
+        if r.returncode != 0:
+            return datasets
+        for line in r.stdout.strip().splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 7:
+                datasets.append({
+                    "name": parts[0],
+                    "used": parts[1],
+                    "available": parts[2],
+                    "referenced": parts[3],
+                    "mountpoint": parts[4],
+                    "quota": parts[5] if parts[5] != "none" else None,
+                    "compression": parts[6],
+                })
+    except Exception:
+        pass
+    return datasets
+
+
+def create_zfs_pool(pool_name, disks, raid_type="raidz1"):
+    """Create a ZFS pool with given disks and RAID type."""
+    global task_log, task_running, task_done, task_name
+    task_log = []
+    task_running = True
+    task_done = False
+    task_name = "Create ZFS Pool '%s'" % pool_name
+
+    def log(msg):
+        task_log.append(msg)
+
+    log("=== Creating ZFS Pool: %s (%s) ===" % (pool_name, raid_type))
+    log("Disks: %s" % ", ".join(disks))
+    log("")
+
+    try:
+        # Validate inputs
+        if not re.match(r'^[a-zA-Z][a-zA-Z0-9_-]*$', pool_name):
+            log("ERROR: Invalid pool name. Use letters, numbers, hyphens, underscores.")
+            task_running = False
+            task_done = True
+            return
+
+        if raid_type == "raidz1" and len(disks) < 3:
+            log("ERROR: RAIDZ1 requires at least 3 disks (got %d)." % len(disks))
+            task_running = False
+            task_done = True
+            return
+        elif raid_type == "raidz2" and len(disks) < 4:
+            log("ERROR: RAIDZ2 requires at least 4 disks (got %d)." % len(disks))
+            task_running = False
+            task_done = True
+            return
+        elif raid_type == "mirror" and len(disks) < 2:
+            log("ERROR: Mirror requires at least 2 disks (got %d)." % len(disks))
+            task_running = False
+            task_done = True
+            return
+
+        # Wipe partition tables
+        for disk in disks:
+            log("Wiping partition table on %s..." % disk)
+            subprocess.run(
+                ["wipefs", "--all", "--force", disk],
+                capture_output=True, timeout=30, env=ENV_WITH_PATH)
+            subprocess.run(
+                ["sgdisk", "--zap-all", disk],
+                capture_output=True, timeout=30, env=ENV_WITH_PATH)
+
+        log("")
+        log("Creating pool...")
+
+        # Build zpool create command
+        cmd = ["zpool", "create", "-f",
+               "-o", "ashift=12",
+               "-O", "atime=off",
+               "-O", "compression=lz4",
+               "-O", "xattr=sa",
+               "-O", "acltype=posixacl",
+               "-O", "mountpoint=/data",
+               pool_name, raid_type] + disks
+
+        if raid_type == "stripe":
+            cmd = ["zpool", "create", "-f",
+                   "-o", "ashift=12",
+                   "-O", "atime=off",
+                   "-O", "compression=lz4",
+                   "-O", "xattr=sa",
+                   "-O", "acltype=posixacl",
+                   "-O", "mountpoint=/data",
+                   pool_name] + disks
+
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1, env=ENV_WITH_PATH)
+        for line in iter(proc.stdout.readline, ""):
+            log(line.rstrip())
+        proc.wait()
+
+        if proc.returncode != 0:
+            log("")
+            log("=== Pool creation FAILED (exit code %d) ===" % proc.returncode)
+            task_running = False
+            task_done = True
+            return
+
+        log("Pool created!")
+        log("")
+
+        # Create standard datasets
+        log("Creating datasets...")
+        datasets = [
+            (pool_name + "/apps", "/data/apps"),
+            (pool_name + "/shared", "/data/shared"),
+            (pool_name + "/backups", "/data/backups"),
+            (pool_name + "/postgres", "/data/postgres"),
+        ]
+        for ds_name, mp in datasets:
+            subprocess.run(
+                ["zfs", "create", "-o", "mountpoint=" + mp, ds_name],
+                capture_output=True, timeout=10, env=ENV_WITH_PATH)
+            log("  Created: %s -> %s" % (ds_name, mp))
+
+        log("")
+        log("Setting permissions...")
+        os.chmod("/data/shared", 0o770)
+        subprocess.run(["chown", "root:openos-data", "/data/shared"],
+                       timeout=5, env=ENV_WITH_PATH)
+        os.chmod("/data/postgres", 0o700)
+        subprocess.run(["chown", "postgres:postgres", "/data/postgres"],
+                       timeout=5, env=ENV_WITH_PATH)
+
+        log("")
+        log("Pool status:")
+        r = subprocess.run(["zpool", "status", pool_name],
+                           capture_output=True, text=True, timeout=10, env=ENV_WITH_PATH)
+        for line in r.stdout.splitlines():
+            log("  " + line)
+
+        log("")
+        log("=== ZFS Pool '%s' created successfully ===" % pool_name)
+
+    except Exception as e:
+        log("ERROR: %s" % e)
+
+    task_running = False
+    task_done = True
+
+
+def create_zfs_dataset(pool_name, dataset_name, quota=None):
+    """Create a ZFS dataset within a pool."""
+    full_name = pool_name + "/" + dataset_name
+    mountpoint = "/data/" + dataset_name
+    cmd = ["zfs", "create", "-o", "mountpoint=" + mountpoint]
+    if quota:
+        cmd += ["-o", "quota=" + quota]
+    cmd.append(full_name)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=10, env=ENV_WITH_PATH)
+        if r.returncode == 0:
+            return {"ok": True, "dataset": full_name, "mountpoint": mountpoint}
+        return {"ok": False, "error": r.stderr.strip()}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def destroy_zfs_dataset(dataset_name):
+    """Destroy a ZFS dataset."""
+    try:
+        r = subprocess.run(
+            ["zfs", "destroy", dataset_name],
+            capture_output=True, text=True, timeout=10, env=ENV_WITH_PATH)
+        if r.returncode == 0:
+            return {"ok": True}
+        return {"ok": False, "error": r.stderr.strip()}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# ==================== SAMBA SHARE MANAGEMENT ====================
+
+SHARES_CONF = "/etc/openos/shares.json"
+
+
+def get_shares():
+    """Read configured Samba shares."""
+    try:
+        with open(SHARES_CONF) as f:
+            return json.loads(f.read())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def save_shares(shares):
+    """Write shares config and regenerate smb.conf includes."""
+    with open(SHARES_CONF, "w") as f:
+        f.write(json.dumps(shares, indent=2))
+    # Write Samba share definitions
+    conf_dir = "/etc/samba/shares.d"
+    os.makedirs(conf_dir, exist_ok=True)
+    # Clear old share files
+    for fname in os.listdir(conf_dir):
+        os.remove(os.path.join(conf_dir, fname))
+    for share in shares:
+        conf_path = os.path.join(conf_dir, share["name"] + ".conf")
+        lines = [
+            "[%s]" % share["name"],
+            "   path = %s" % share["path"],
+            "   browseable = yes",
+            "   read only = %s" % ("yes" if share.get("readonly", False) else "no"),
+            "   guest ok = %s" % ("yes" if share.get("guest", False) else "no"),
+        ]
+        if share.get("valid_users"):
+            lines.append("   valid users = %s" % " ".join(share["valid_users"]))
+        if share.get("write_list"):
+            lines.append("   write list = %s" % " ".join(share["write_list"]))
+        lines.append("   create mask = 0664")
+        lines.append("   directory mask = 0775")
+        lines.append("")
+        with open(conf_path, "w") as f:
+            f.write("\n".join(lines))
+    # Reload samba
+    subprocess.run(["systemctl", "reload", "smbd"],
+                   capture_output=True, timeout=10, env=ENV_WITH_PATH)
+
+
+def create_share(name, path, valid_users=None, write_list=None, readonly=False, guest=False):
+    """Create a new Samba share."""
+    if not re.match(r'^[a-zA-Z][a-zA-Z0-9_-]*$', name):
+        return {"ok": False, "error": "Invalid share name"}
+    if not path.startswith("/data/"):
+        return {"ok": False, "error": "Share path must be under /data/"}
+    os.makedirs(path, exist_ok=True)
+    os.chmod(path, 0o775)
+    shares = get_shares()
+    for s in shares:
+        if s["name"] == name:
+            return {"ok": False, "error": "Share '%s' already exists" % name}
+    shares.append({
+        "name": name,
+        "path": path,
+        "valid_users": valid_users or [],
+        "write_list": write_list or [],
+        "readonly": readonly,
+        "guest": guest,
+    })
+    save_shares(shares)
+    return {"ok": True}
+
+
+def delete_share(name):
+    """Delete a Samba share (does not delete files)."""
+    shares = get_shares()
+    shares = [s for s in shares if s["name"] != name]
+    save_shares(shares)
+    return {"ok": True}
+
+
+def get_system_users():
+    """Get list of non-system users (UID >= 1000)."""
+    users = []
+    try:
+        with open("/etc/passwd") as f:
+            for line in f:
+                parts = line.strip().split(":")
+                if len(parts) >= 7:
+                    uid = int(parts[2])
+                    if uid >= 1000 and uid < 65000:
+                        users.append({
+                            "username": parts[0],
+                            "uid": uid,
+                            "home": parts[5],
+                            "shell": parts[6],
+                        })
+    except Exception:
+        pass
+    return users
+
+
+def create_system_user(username, password=None):
+    """Create a system user and optionally set Samba password."""
+    if not re.match(r'^[a-z][a-z0-9_-]{1,30}$', username):
+        return {"ok": False, "error": "Invalid username (lowercase, 2-31 chars, start with letter)"}
+    try:
+        r = subprocess.run(
+            ["useradd", "-m", "-G", "openos-data", "-s", "/bin/bash", username],
+            capture_output=True, text=True, timeout=10, env=ENV_WITH_PATH)
+        if r.returncode != 0 and "already exists" not in r.stderr:
+            return {"ok": False, "error": r.stderr.strip()}
+        if password:
+            proc = subprocess.run(
+                ["smbpasswd", "-a", "-s", username],
+                input=password + "\n" + password + "\n",
+                capture_output=True, text=True, timeout=10, env=ENV_WITH_PATH)
+            if proc.returncode != 0:
+                return {"ok": False, "error": "User created but Samba password failed: " + proc.stderr.strip()}
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 def mount_disk(device, mountpoint, fstype, role="data"):
     """Add a mount to mounts.nix and trigger rebuild."""
     global task_log, task_running, task_done, task_name
@@ -1136,8 +1555,29 @@ td{padding:.4rem;border-bottom:1px solid #222}
 <div class="page" id="p-storage">
 <div class="card">
 <div style="display:flex;justify-content:space-between;align-items:center">
+<h2 style="margin:0">ZFS Pools</h2>
+<button class="btn btn-sm" onclick="showPoolDialog()">Create Pool</button>
+</div>
+<div id="pool-list" style="margin-top:.8rem">Loading...</div>
+</div>
+<div class="card">
+<div style="display:flex;justify-content:space-between;align-items:center">
+<h2 style="margin:0">Datasets</h2>
+<button class="btn btn-sm btn-gray" onclick="showDatasetDialog()">New Dataset</button>
+</div>
+<div id="dataset-list" style="margin-top:.8rem">Loading...</div>
+</div>
+<div class="card">
+<div style="display:flex;justify-content:space-between;align-items:center">
+<h2 style="margin:0">File Shares</h2>
+<button class="btn btn-sm btn-gray" onclick="showShareDialog()">New Share</button>
+</div>
+<div id="share-list" style="margin-top:.8rem">Loading...</div>
+</div>
+<div class="card">
+<div style="display:flex;justify-content:space-between;align-items:center">
 <h2 style="margin:0">Disks</h2>
-<button class="btn btn-sm" onclick="showMountDialog()">Mount Disk</button>
+<button class="btn btn-sm btn-gray" onclick="showMountDialog()">Mount Disk</button>
 </div>
 <div id="disk-list" style="margin-top:.8rem">Loading...</div>
 </div>
@@ -1210,6 +1650,86 @@ td{padding:.4rem;border-bottom:1px solid #222}
 </div>
 </div>
 
+<!-- ==================== CREATE POOL DIALOG ==================== -->
+<div class="modal-overlay" id="pool-modal">
+<div class="modal" style="max-width:600px">
+<h3>Create ZFS Pool</h3>
+<label>Pool Name</label>
+<input id="pool-name" value="tank" placeholder="tank">
+<label>RAID Type</label>
+<select id="pool-type">
+<option value="raidz1">RAIDZ1 (1 disk parity, min 3 disks)</option>
+<option value="raidz2">RAIDZ2 (2 disk parity, min 4 disks)</option>
+<option value="mirror">Mirror (min 2 disks)</option>
+<option value="stripe">Stripe (no redundancy!)</option>
+</select>
+<label>Select Disks</label>
+<div id="pool-disk-list" style="max-height:200px;overflow-y:auto;border:1px solid #333;border-radius:4px;padding:.5rem;margin-bottom:.8rem;background:#0a0a0a">
+<span style="color:#666">Loading available disks...</span>
+</div>
+<p style="color:#f97316;font-size:.8rem;margin-bottom:.8rem">&#x26A0; All data on selected disks will be erased!</p>
+<div class="modal-actions">
+<button class="btn btn-gray" onclick="closePoolDialog()">Cancel</button>
+<button class="btn" onclick="doCreatePool()">Create Pool</button>
+</div>
+</div>
+</div>
+
+<!-- ==================== CREATE DATASET DIALOG ==================== -->
+<div class="modal-overlay" id="dataset-modal">
+<div class="modal">
+<h3>New Dataset</h3>
+<label>Pool</label>
+<select id="ds-pool"><option value="">Loading...</option></select>
+<label>Dataset Name</label>
+<input id="ds-name" placeholder="e.g. movies, photos, documents">
+<label>Quota (optional)</label>
+<input id="ds-quota" placeholder="e.g. 100G, 500G, none">
+<div class="modal-actions">
+<button class="btn btn-gray" onclick="closeDatasetDialog()">Cancel</button>
+<button class="btn" onclick="doCreateDataset()">Create</button>
+</div>
+</div>
+</div>
+
+<!-- ==================== CREATE SHARE DIALOG ==================== -->
+<div class="modal-overlay" id="share-modal">
+<div class="modal">
+<h3>New File Share</h3>
+<label>Share Name</label>
+<input id="share-name" placeholder="e.g. Filme, Fotos, Dokumente">
+<label>Path</label>
+<input id="share-path" placeholder="/data/shared/filme">
+<label>Allowed Users (comma-separated, leave empty for all)</label>
+<input id="share-users" placeholder="e.g. anna, max, jonas">
+<label>Write Access (comma-separated, leave empty = same as allowed)</label>
+<input id="share-writers" placeholder="e.g. anna, max">
+<div style="margin-bottom:.8rem">
+<label style="display:inline"><input type="checkbox" id="share-readonly"> Read-only</label>
+<label style="display:inline;margin-left:1rem"><input type="checkbox" id="share-guest"> Guest access (no password)</label>
+</div>
+<div class="modal-actions">
+<button class="btn btn-gray" onclick="closeShareDialog()">Cancel</button>
+<button class="btn" onclick="doCreateShare()">Create Share</button>
+</div>
+</div>
+</div>
+
+<!-- ==================== CREATE USER DIALOG ==================== -->
+<div class="modal-overlay" id="user-modal">
+<div class="modal">
+<h3>New User</h3>
+<label>Username</label>
+<input id="new-username" placeholder="e.g. anna">
+<label>Password (for file share access)</label>
+<input id="new-password" type="password" placeholder="Samba password">
+<div class="modal-actions">
+<button class="btn btn-gray" onclick="closeUserDialog()">Cancel</button>
+<button class="btn" onclick="doCreateUser()">Create User</button>
+</div>
+</div>
+</div>
+
 <script>
 (function(){
 var icons={"tv":"\uD83D\uDCFA","cloud":"\u2601\uFE0F","brain":"\uD83E\uDDE0","sync":"\uD83D\uDD04","lock":"\uD83D\uDD12","git":"\uD83C\uDF3F","doc":"\uD83D\uDCDD","files":"\uD83D\uDCC1","music":"\uD83C\uDFB5"};
@@ -1275,6 +1795,56 @@ load();setInterval(load,15000);
 
 /* ==================== STORAGE ==================== */
 function loadStorage(){
+/* ZFS Pools */
+fetch('/api/storage/pools').then(function(r){return r.json()}).then(function(pools){
+var el=document.getElementById('pool-list');
+if(!pools||!pools.length){el.innerHTML='<div style="color:#888;padding:.5rem 0">No ZFS pools found. Create one to get started.</div>';return;}
+var h='';
+for(var i=0;i<pools.length;i++){
+var p=pools[i];
+var pct=parseInt(p.capacity_pct)||0;
+h+='<div class="disk-card"><div class="disk-header"><div><span class="disk-name">'+p.name+'</span> <span style="color:#666;font-size:.8rem;margin-left:.5rem">'+p.type.toUpperCase()+'</span> <span style="color:#666;font-size:.8rem;margin-left:.5rem">'+p.disk_count+' disks</span></div>';
+h+='<div><span class="val '+(p.health==='ONLINE'?'ok':'fail')+'">'+p.health+'</span></div></div>';
+h+='<div class="bar-track"><div class="bar-fill '+barColor(pct)+'" style="width:'+pct+'%"></div></div>';
+h+='<div style="display:flex;justify-content:space-between;font-size:.8rem;color:#888;margin-top:.3rem"><span>Used: '+p.allocated+'</span><span>Free: '+p.free+'</span><span>Total: '+p.size+'</span><span>Frag: '+p.fragmentation+'</span></div>';
+h+='</div>';
+}
+el.innerHTML=h;
+});
+
+/* ZFS Datasets */
+fetch('/api/storage/datasets').then(function(r){return r.json()}).then(function(datasets){
+var el=document.getElementById('dataset-list');
+if(!datasets||!datasets.length){el.innerHTML='<div style="color:#888;padding:.5rem 0">No datasets. Create a pool first.</div>';return;}
+var h='<table><thead><tr><th>Dataset</th><th>Used</th><th>Available</th><th>Mountpoint</th><th>Quota</th><th></th></tr></thead><tbody>';
+for(var i=0;i<datasets.length;i++){
+var d=datasets[i];
+h+='<tr><td style="font-family:monospace;font-size:.85rem">'+d.name+'</td><td>'+d.used+'</td><td>'+d.available+'</td><td style="color:#888">'+d.mountpoint+'</td><td>'+(d.quota||'-')+'</td>';
+h+='<td><button class="btn btn-sm btn-red" onclick="deleteDataset(\''+d.name+'\')">Del</button></td></tr>';
+}
+h+='</tbody></table>';
+el.innerHTML=h;
+});
+
+/* Shares */
+fetch('/api/storage/shares').then(function(r){return r.json()}).then(function(shares){
+var el=document.getElementById('share-list');
+if(!shares||!shares.length){el.innerHTML='<div style="color:#888;padding:.5rem 0">No shares configured. <a href="#" onclick="showShareDialog();return false" style="color:#f97316">Create one</a> | <a href="#" onclick="showUserDialog();return false" style="color:#f97316">Add user</a></div>';return;}
+var h='<div style="margin-bottom:.5rem"><button class="btn btn-sm btn-gray" onclick="showUserDialog()">Add User</button></div>';
+h+='<table><thead><tr><th>Share</th><th>Path</th><th>Users</th><th>Access</th><th></th></tr></thead><tbody>';
+for(var i=0;i<shares.length;i++){
+var s=shares[i];
+var users=s.valid_users&&s.valid_users.length?s.valid_users.join(', '):'<span style="color:#888">everyone</span>';
+var acc=s.readonly?'<span style="color:#f97316">read-only</span>':'<span class="ok">read/write</span>';
+if(s.guest)acc+=' <span style="color:#888">(guest)</span>';
+h+='<tr><td style="font-weight:600">'+s.name+'</td><td style="font-family:monospace;font-size:.85rem;color:#888">'+s.path+'</td><td>'+users+'</td><td>'+acc+'</td>';
+h+='<td><button class="btn btn-sm btn-red" onclick="deleteShare(\''+s.name+'\')">Del</button></td></tr>';
+}
+h+='</tbody></table>';
+el.innerHTML=h;
+});
+
+/* Physical Disks */
 fetch('/api/storage').then(function(r){return r.json()}).then(function(d){
 var el=document.getElementById('disk-list');
 if(!d.disks||!d.disks.length){el.innerHTML='<div style="color:#888">No disks detected.</div>';return;}
@@ -1423,6 +1993,133 @@ loadStorage();
 }
 });
 }
+
+/* ZFS Pool Dialog */
+window.showPoolDialog=function(){
+document.getElementById('pool-modal').className='modal-overlay show';
+fetch('/api/storage/available-disks').then(function(r){return r.json()}).then(function(disks){
+var el=document.getElementById('pool-disk-list');
+if(!disks||!disks.length){el.innerHTML='<span style="color:#ef4444">No available disks found. All disks are in use.</span>';return;}
+var h='';
+for(var i=0;i<disks.length;i++){
+var d=disks[i];
+var dtype=d.rotational?'HDD':'SSD';
+if(d.removable)dtype='USB';
+h+='<label style="display:flex;align-items:center;gap:.6rem;padding:.4rem;cursor:pointer;border-bottom:1px solid #222">';
+h+='<input type="checkbox" class="pool-disk-cb" value="'+d.device+'">';
+h+='<span style="font-family:monospace;min-width:80px">'+d.name+'</span>';
+h+='<span style="color:#888;font-size:.85rem">'+fmtBytes(d.size)+'</span>';
+h+='<span style="color:#555;font-size:.8rem">'+dtype+'</span>';
+h+='<span style="color:#666;font-size:.8rem">'+d.model+'</span>';
+h+='</label>';
+}
+el.innerHTML=h;
+});
+};
+window.closePoolDialog=function(){document.getElementById('pool-modal').className='modal-overlay';};
+
+window.doCreatePool=function(){
+var name=document.getElementById('pool-name').value.trim();
+var rtype=document.getElementById('pool-type').value;
+var cbs=document.querySelectorAll('.pool-disk-cb:checked');
+var disks=[];
+for(var i=0;i<cbs.length;i++)disks.push(cbs[i].value);
+if(!name){alert('Enter a pool name');return;}
+if(!disks.length){alert('Select at least one disk');return;}
+if(rtype==='raidz1'&&disks.length<3){alert('RAIDZ1 requires at least 3 disks (selected: '+disks.length+')');return;}
+if(rtype==='raidz2'&&disks.length<4){alert('RAIDZ2 requires at least 4 disks (selected: '+disks.length+')');return;}
+if(rtype==='mirror'&&disks.length<2){alert('Mirror requires at least 2 disks (selected: '+disks.length+')');return;}
+if(!confirm('Create pool "'+name+'" ('+rtype+') with '+disks.length+' disks?\n\nALL DATA ON THESE DISKS WILL BE ERASED!')){return;}
+closePoolDialog();
+var log=document.getElementById('storage-buildlog');
+var st=document.getElementById('storage-buildstatus');
+log.style.display='block';log.textContent='';log.setAttribute('data-n','0');
+st.style.display='block';st.style.background='#1a1000';st.style.color='#f97316';st.textContent='Creating ZFS pool...';
+fetch('/api/storage/create-pool',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,type:rtype,disks:disks})})
+.then(function(r){return r.json()}).then(function(d){
+if(d.ok){storageTimer=setInterval(pollStorageLog,2000);}
+else{st.style.background='#2d0a0a';st.style.color='#ef4444';st.textContent='Error: '+(d.error||'unknown');}
+});
+};
+
+/* Dataset Dialog */
+window.showDatasetDialog=function(){
+document.getElementById('dataset-modal').className='modal-overlay show';
+fetch('/api/storage/pools').then(function(r){return r.json()}).then(function(pools){
+var sel=document.getElementById('ds-pool');
+sel.innerHTML='';
+if(!pools||!pools.length){sel.innerHTML='<option value="">No pools available</option>';return;}
+for(var i=0;i<pools.length;i++){sel.innerHTML+='<option value="'+pools[i].name+'">'+pools[i].name+'</option>';}
+});
+};
+window.closeDatasetDialog=function(){document.getElementById('dataset-modal').className='modal-overlay';};
+
+window.doCreateDataset=function(){
+var pool=document.getElementById('ds-pool').value;
+var name=document.getElementById('ds-name').value.trim();
+var quota=document.getElementById('ds-quota').value.trim()||null;
+if(!pool){alert('Select a pool');return;}
+if(!name){alert('Enter a dataset name');return;}
+fetch('/api/storage/create-dataset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pool:pool,name:name,quota:quota})})
+.then(function(r){return r.json()}).then(function(d){
+if(d.ok){closeDatasetDialog();loadStorage();}
+else{alert('Error: '+(d.error||'unknown'));}
+});
+};
+
+window.deleteDataset=function(name){
+if(!confirm('Delete dataset "'+name+'"? This will destroy all data in it!')){return;}
+fetch('/api/storage/delete-dataset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dataset:name})})
+.then(function(r){return r.json()}).then(function(d){
+if(d.ok){loadStorage();}else{alert('Error: '+(d.error||'unknown'));}
+});
+};
+
+/* Share Dialog */
+window.showShareDialog=function(){document.getElementById('share-modal').className='modal-overlay show';};
+window.closeShareDialog=function(){document.getElementById('share-modal').className='modal-overlay';};
+
+window.doCreateShare=function(){
+var name=document.getElementById('share-name').value.trim();
+var path=document.getElementById('share-path').value.trim();
+var usersStr=document.getElementById('share-users').value.trim();
+var writersStr=document.getElementById('share-writers').value.trim();
+var readonly=document.getElementById('share-readonly').checked;
+var guest=document.getElementById('share-guest').checked;
+if(!name){alert('Enter a share name');return;}
+if(!path){alert('Enter a path');return;}
+var users=usersStr?usersStr.split(',').map(function(s){return s.trim()}).filter(Boolean):[];
+var writers=writersStr?writersStr.split(',').map(function(s){return s.trim()}).filter(Boolean):[];
+fetch('/api/storage/create-share',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,path:path,valid_users:users,write_list:writers,readonly:readonly,guest:guest})})
+.then(function(r){return r.json()}).then(function(d){
+if(d.ok){closeShareDialog();loadStorage();}
+else{alert('Error: '+(d.error||'unknown'));}
+});
+};
+
+window.deleteShare=function(name){
+if(!confirm('Delete share "'+name+'"? (Files will NOT be deleted)')){return;}
+fetch('/api/storage/delete-share',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name})})
+.then(function(r){return r.json()}).then(function(d){
+if(d.ok){loadStorage();}else{alert('Error: '+(d.error||'unknown'));}
+});
+};
+
+/* User Dialog */
+window.showUserDialog=function(){document.getElementById('user-modal').className='modal-overlay show';};
+window.closeUserDialog=function(){document.getElementById('user-modal').className='modal-overlay';};
+
+window.doCreateUser=function(){
+var username=document.getElementById('new-username').value.trim();
+var password=document.getElementById('new-password').value;
+if(!username){alert('Enter a username');return;}
+if(!password){alert('Enter a password');return;}
+fetch('/api/storage/create-user',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:username,password:password})})
+.then(function(r){return r.json()}).then(function(d){
+if(d.ok){closeUserDialog();alert('User "'+username+'" created!');loadStorage();}
+else{alert('Error: '+(d.error||'unknown'));}
+});
+};
 
 /* ==================== NETWORK ==================== */
 function loadNetwork(){
@@ -1633,6 +2330,19 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
             self._json(get_unmounted_partitions())
         elif self.path == "/api/storage/mounts":
             self._json(get_configured_mounts())
+        elif self.path == "/api/storage/available-disks":
+            self._json(get_available_disks())
+        elif self.path == "/api/storage/pools":
+            self._json(get_zfs_pools())
+        elif self.path.startswith("/api/storage/datasets"):
+            pool = None
+            if "pool=" in self.path:
+                pool = self.path.split("pool=")[1].split("&")[0]
+            self._json(get_zfs_datasets(pool))
+        elif self.path == "/api/storage/shares":
+            self._json(get_shares())
+        elif self.path == "/api/storage/users":
+            self._json(get_system_users())
         elif self.path == "/api/network":
             self._json(get_network_info())
         elif self.path.startswith("/api/task-log"):
@@ -1804,6 +2514,69 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
             t = threading.Thread(target=unmount_disk, args=(mountpoint,), daemon=True)
             t.start()
             self._json({"ok": True})
+
+        elif self.path == "/api/storage/create-pool":
+            pool_name = body.get("name", "")
+            disks = body.get("disks", [])
+            raid_type = body.get("type", "raidz1")
+            if not pool_name:
+                self._json({"ok": False, "error": "Pool name required"})
+                return
+            if not disks or len(disks) < 1:
+                self._json({"ok": False, "error": "At least one disk required"})
+                return
+            if raid_type not in ("raidz1", "raidz2", "mirror", "stripe"):
+                self._json({"ok": False, "error": "Invalid RAID type"})
+                return
+            if task_running:
+                self._json({"ok": False, "error": "Task already running"})
+                return
+            t = threading.Thread(target=create_zfs_pool, args=(pool_name, disks, raid_type), daemon=True)
+            t.start()
+            self._json({"ok": True})
+
+        elif self.path == "/api/storage/create-dataset":
+            pool = body.get("pool", "")
+            dataset = body.get("name", "")
+            quota = body.get("quota")
+            if not pool or not dataset:
+                self._json({"ok": False, "error": "pool and name required"})
+                return
+            self._json(create_zfs_dataset(pool, dataset, quota))
+
+        elif self.path == "/api/storage/delete-dataset":
+            dataset = body.get("dataset", "")
+            if not dataset:
+                self._json({"ok": False, "error": "dataset name required"})
+                return
+            self._json(destroy_zfs_dataset(dataset))
+
+        elif self.path == "/api/storage/create-share":
+            name = body.get("name", "")
+            path = body.get("path", "")
+            valid_users = body.get("valid_users", [])
+            write_list = body.get("write_list", [])
+            readonly = body.get("readonly", False)
+            guest = body.get("guest", False)
+            if not name or not path:
+                self._json({"ok": False, "error": "name and path required"})
+                return
+            self._json(create_share(name, path, valid_users, write_list, readonly, guest))
+
+        elif self.path == "/api/storage/delete-share":
+            name = body.get("name", "")
+            if not name:
+                self._json({"ok": False, "error": "name required"})
+                return
+            self._json(delete_share(name))
+
+        elif self.path == "/api/storage/create-user":
+            username = body.get("username", "")
+            password = body.get("password", "")
+            if not username:
+                self._json({"ok": False, "error": "username required"})
+                return
+            self._json(create_system_user(username, password or None))
 
         elif self.path == "/api/apps/install":
             app_id = body.get("app", "")

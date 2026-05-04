@@ -1,4 +1,4 @@
-{ config, pkgs, inputs, hostname, ... }:
+{ config, lib, pkgs, inputs, hostname, ... }:
 {
   imports = [
     ./hardware-generic.nix
@@ -10,9 +10,15 @@
     if builtins.pathExists /etc/openos/mounts.nix
     then [ /etc/openos/mounts.nix ]
     else [ ]
+  ) ++ (
+    if builtins.pathExists /etc/openos/host-id.nix
+    then [ /etc/openos/host-id.nix ]
+    else [ ]
   );
 
   networking.hostName = "openos";
+  # Required for ZFS — generated per-machine during install, placeholder here
+  networking.hostId = lib.mkDefault "deadbeef";
 
   openos = {
     domain = "openos.local";
