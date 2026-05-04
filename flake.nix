@@ -61,6 +61,14 @@
       homeserver-arm = mkHost "aarch64-linux" "default" {
         extraModules = appModules;
       };
+
+      # Backward compat: old name still works during transition
+      openos = mkHost "x86_64-linux" "default" {
+        extraModules = appModules;
+      };
+      openos-arm = mkHost "aarch64-linux" "default" {
+        extraModules = appModules;
+      };
     };
 
     packages = forAllSystems (system:

@@ -228,9 +228,11 @@ in {
   systemd.services.firewall.reloadIfChanged = lib.mkForce false;
   systemd.services.firewall.restartIfChanged = lib.mkForce false;
 
-  # Ensure state directories
+  # Ensure state directories + backward-compat symlinks for migration from openos
   systemd.tmpfiles.rules = [
     "d /var/lib/homeserver 0755 root root -"
     "d /etc/homeserver 0755 root root -"
+    "L+ /etc/openos - - - - /etc/homeserver"
+    "L+ /var/lib/openos - - - - /var/lib/homeserver"
   ];
 }
