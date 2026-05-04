@@ -545,6 +545,103 @@ def get_zfs_datasets(pool_name=None):
     return datasets
 
 
+def get_importable_pools():
+    """Find ZFS pools that exist on disks but are not currently imported."""
+    importable = []
+    try:
+        r = subprocess.run(
+            ["zpool", "import"],
+            capture_output=True, text=True, timeout=15, env=ENV_WITH_PATH)
+        current_pool = None
+        for line in r.stdout.splitlines():
+            line_stripped = line.strip()
+            if line_stripped.startswith("pool:"):
+                current_pool = {"name": line_stripped.split(":", 1)[1].strip(), "state": "", "disks": []}
+            elif current_pool and line_stripped.startswith("state:"):
+                current_pool["state"] = line_stripped.split(":", 1)[1].strip()
+            elif current_pool and line_stripped.startswith("config:"):
+                pass
+            elif current_pool and (line_stripped.startswith("/dev/") or
+                  (line_stripped and line_stripped.split()[0].startswith("sd") or
+                   line_stripped.split()[0].startswith("nvme"))):
+                current_pool["disks"].append(line_stripped.split()[0])
+            elif current_pool and line_stripped == "" and current_pool.get("name"):
+                importable.append(current_pool)
+                current_pool = None
+        if current_pool and current_pool.get("name"):
+            importable.append(current_pool)
+    except Exception:
+        pass
+    return importable
+
+
+def import_zfs_pool(pool_name, force=False):
+    """Import an existing ZFS pool."""
+    global task_log, task_running, task_done, task_name
+    task_log = []
+    task_running = True
+    task_done = False
+    task_name = "Import ZFS Pool '%s'" % pool_name
+
+    def log(msg):
+        task_log.append(msg)
+
+    log("=== Importing ZFS Pool: %s ===" % pool_name)
+
+    try:
+        cmd = ["zpool", "import"]
+        if force:
+            cmd.append("-f")
+        cmd.append(pool_name)
+
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1, env=ENV_WITH_PATH)
+        for line in iter(proc.stdout.readline, ""):
+            log(line.rstrip())
+        proc.wait()
+
+        if proc.returncode != 0:
+            log("")
+            log("Retrying with -f (force)...")
+            proc2 = subprocess.Popen(
+                ["zpool", "import", "-f", pool_name],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1, env=ENV_WITH_PATH)
+            for line in iter(proc2.stdout.readline, ""):
+                log(line.rstrip())
+            proc2.wait()
+            if proc2.returncode != 0:
+                log("")
+                log("=== Import FAILED ===" )
+                task_running = False
+                task_done = True
+                return
+
+        log("")
+        log("Pool imported! Status:")
+        r = subprocess.run(["zpool", "status", pool_name],
+                           capture_output=True, text=True, timeout=10, env=ENV_WITH_PATH)
+        for line in r.stdout.splitlines():
+            log("  " + line)
+
+        log("")
+        r2 = subprocess.run(["zfs", "list", "-r", pool_name],
+                            capture_output=True, text=True, timeout=10, env=ENV_WITH_PATH)
+        log("Datasets:")
+        for line in r2.stdout.splitlines():
+            log("  " + line)
+
+        log("")
+        log("=== ZFS Pool '%s' imported successfully ===" % pool_name)
+
+    except Exception as e:
+        log("ERROR: %s" % e)
+
+    task_running = False
+    task_done = True
+
+
 def create_zfs_pool(pool_name, disks, raid_type="raidz1"):
     """Create a ZFS pool with given disks and RAID type."""
     global task_log, task_running, task_done, task_name
@@ -1556,7 +1653,7 @@ td{padding:.4rem;border-bottom:1px solid #222}
 <div class="card">
 <div style="display:flex;justify-content:space-between;align-items:center">
 <h2 style="margin:0">ZFS Pools</h2>
-<button class="btn btn-sm" onclick="showPoolDialog()">Create Pool</button>
+<div><button class="btn btn-sm btn-gray" onclick="showImportDialog()" style="margin-right:.5rem">Import Pool</button><button class="btn btn-sm" onclick="showPoolDialog()">Create Pool</button></div>
 </div>
 <div id="pool-list" style="margin-top:.8rem">Loading...</div>
 </div>
@@ -1726,6 +1823,19 @@ td{padding:.4rem;border-bottom:1px solid #222}
 <div class="modal-actions">
 <button class="btn btn-gray" onclick="closeUserDialog()">Cancel</button>
 <button class="btn" onclick="doCreateUser()">Create User</button>
+</div>
+</div>
+</div>
+
+<!-- ==================== IMPORT POOL DIALOG ==================== -->
+<div class="modal-overlay" id="import-modal">
+<div class="modal">
+<h3>Import Existing ZFS Pool</h3>
+<div id="import-pool-list" style="margin-bottom:1rem">
+<span style="color:#666">Scanning for importable pools...</span>
+</div>
+<div class="modal-actions">
+<button class="btn btn-gray" onclick="closeImportDialog()">Cancel</button>
 </div>
 </div>
 </div>
@@ -2042,6 +2152,42 @@ else{st.style.background='#2d0a0a';st.style.color='#ef4444';st.textContent='Erro
 });
 };
 
+/* Import Pool Dialog */
+window.showImportDialog=function(){
+document.getElementById('import-modal').className='modal-overlay show';
+var el=document.getElementById('import-pool-list');
+el.innerHTML='<span style="color:#666">Scanning for importable pools...</span>';
+fetch('/api/storage/importable-pools').then(function(r){return r.json()}).then(function(pools){
+if(!pools||!pools.length){el.innerHTML='<div style="color:#888;padding:.5rem 0">No importable pools found. The disks might not contain a valid ZFS pool.</div>';return;}
+var h='';
+for(var i=0;i<pools.length;i++){
+var p=pools[i];
+h+='<div style="background:#111;border:1px solid #2a2a2a;border-radius:6px;padding:.8rem;margin-bottom:.5rem;display:flex;justify-content:space-between;align-items:center">';
+h+='<div><span style="font-weight:600;color:#fff">'+p.name+'</span> <span style="color:#888;font-size:.85rem;margin-left:.5rem">'+p.state+'</span>';
+if(p.disks&&p.disks.length)h+='<div style="font-size:.8rem;color:#555;margin-top:.2rem">Disks: '+p.disks.join(', ')+'</div>';
+h+='</div>';
+h+='<button class="btn btn-sm" onclick="doImportPool(\''+p.name+'\')">Import</button>';
+h+='</div>';
+}
+el.innerHTML=h;
+});
+};
+window.closeImportDialog=function(){document.getElementById('import-modal').className='modal-overlay';};
+
+window.doImportPool=function(name){
+if(!confirm('Import pool "'+name+'"?'))return;
+closeImportDialog();
+var log=document.getElementById('storage-buildlog');
+var st=document.getElementById('storage-buildstatus');
+log.style.display='block';log.textContent='';log.setAttribute('data-n','0');
+st.style.display='block';st.style.background='#1a1000';st.style.color='#f97316';st.textContent='Importing pool "'+name+'"...';
+fetch('/api/storage/import-pool',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,force:true})})
+.then(function(r){return r.json()}).then(function(d){
+if(d.ok){storageTimer=setInterval(pollStorageLog,2000);}
+else{st.style.background='#2d0a0a';st.style.color='#ef4444';st.textContent='Error: '+(d.error||'unknown');}
+});
+};
+
 /* Dataset Dialog */
 window.showDatasetDialog=function(){
 document.getElementById('dataset-modal').className='modal-overlay show';
@@ -2334,6 +2480,8 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
             self._json(get_available_disks())
         elif self.path == "/api/storage/pools":
             self._json(get_zfs_pools())
+        elif self.path == "/api/storage/importable-pools":
+            self._json(get_importable_pools())
         elif self.path.startswith("/api/storage/datasets"):
             pool = None
             if "pool=" in self.path:
@@ -2512,6 +2660,19 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
                 self._json({"ok": False, "error": "Task already running"})
                 return
             t = threading.Thread(target=unmount_disk, args=(mountpoint,), daemon=True)
+            t.start()
+            self._json({"ok": True})
+
+        elif self.path == "/api/storage/import-pool":
+            pool_name = body.get("name", "")
+            force = body.get("force", False)
+            if not pool_name:
+                self._json({"ok": False, "error": "Pool name required"})
+                return
+            if task_running:
+                self._json({"ok": False, "error": "Task already running"})
+                return
+            t = threading.Thread(target=import_zfs_pool, args=(pool_name, force), daemon=True)
             t.start()
             self._json({"ok": True})
 
