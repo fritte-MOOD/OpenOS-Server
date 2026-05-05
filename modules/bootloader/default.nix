@@ -228,43 +228,50 @@ in {
   systemd.services.firewall.reloadIfChanged = lib.mkForce false;
   systemd.services.firewall.restartIfChanged = lib.mkForce false;
 
-  # Ensure state directories.
-  # Migration: if old /etc/openos exists (pre-rename), symlink new paths to it
-  # so the new code finds the existing files.  Once migration is complete the
-  # symlinks are harmless (they just point at themselves indirectly).
+  # Ensure state directories exist (tmpfiles runs before activation scripts).
   systemd.tmpfiles.rules = [
     "d /var/lib/homeserver 0755 root root -"
-    "d /etc/homeserver 0755 root root -"
   ];
 
   system.activationScripts.homeserver-migrate = lib.stringAfter [ "etc" ] ''
-    # Migrate /etc/openos → /etc/homeserver (one-time, non-destructive)
-    if [ -d /etc/openos ] && [ ! -L /etc/openos ]; then
-      # Old directory exists as real dir — move contents to new location
-      for f in /etc/openos/*; do
-        base=$(basename "$f")
-        if [ ! -e "/etc/homeserver/$base" ]; then
-          cp -a "$f" "/etc/homeserver/$base" 2>/dev/null || true
-        fi
-      done
-      # Replace old dir with symlink to new location
-      rm -rf /etc/openos
-      ln -sfn /etc/homeserver /etc/openos
-    elif [ ! -e /etc/openos ]; then
-      ln -sfn /etc/homeserver /etc/openos
-    fi
+    migrate_dir() {
+      local old="$1" new="$2"
 
-    if [ -d /var/lib/openos ] && [ ! -L /var/lib/openos ]; then
-      for f in /var/lib/openos/*; do
-        base=$(basename "$f")
-        if [ ! -e "/var/lib/homeserver/$base" ]; then
-          cp -a "$f" "/var/lib/homeserver/$base" 2>/dev/null || true
+      # Step 1: If new path is a symlink, resolve it into a real directory.
+      # Prevents the circular-symlink bug when new→old and we later rm old.
+      if [ -L "$new" ]; then
+        local target
+        target=$(readlink -f "$new" 2>/dev/null || true)
+        rm -f "$new"
+        if [ -d "$target" ]; then
+          mv "$target" "$new"
+        else
+          mkdir -p "$new"
         fi
-      done
-      rm -rf /var/lib/openos
-      ln -sfn /var/lib/homeserver /var/lib/openos
-    elif [ ! -e /var/lib/openos ]; then
-      ln -sfn /var/lib/homeserver /var/lib/openos
-    fi
+      elif [ ! -d "$new" ]; then
+        mkdir -p "$new"
+      fi
+
+      # Step 2: Copy files from old → new (non-destructive)
+      if [ -d "$old" ] && [ ! -L "$old" ]; then
+        for f in "$old"/*; do
+          [ -e "$f" ] || continue
+          local base
+          base=$(basename "$f")
+          if [ ! -e "$new/$base" ]; then
+            cp -a "$f" "$new/$base" 2>/dev/null || true
+          fi
+        done
+        rm -rf "$old"
+      fi
+
+      # Step 3: Backward-compat symlink (old → new)
+      if [ ! -e "$old" ] || [ -L "$old" ]; then
+        ln -sfn "$new" "$old"
+      fi
+    }
+
+    migrate_dir /etc/openos      /etc/homeserver
+    migrate_dir /var/lib/openos  /var/lib/homeserver
   '';
 }
