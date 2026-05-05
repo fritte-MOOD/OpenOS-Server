@@ -228,11 +228,43 @@ in {
   systemd.services.firewall.reloadIfChanged = lib.mkForce false;
   systemd.services.firewall.restartIfChanged = lib.mkForce false;
 
-  # Ensure state directories + backward-compat symlinks for migration from openos
+  # Ensure state directories.
+  # Migration: if old /etc/openos exists (pre-rename), symlink new paths to it
+  # so the new code finds the existing files.  Once migration is complete the
+  # symlinks are harmless (they just point at themselves indirectly).
   systemd.tmpfiles.rules = [
     "d /var/lib/homeserver 0755 root root -"
     "d /etc/homeserver 0755 root root -"
-    "L+ /etc/openos - - - - /etc/homeserver"
-    "L+ /var/lib/openos - - - - /var/lib/homeserver"
   ];
+
+  system.activationScripts.homeserver-migrate = lib.stringAfter [ "etc" ] ''
+    # Migrate /etc/openos → /etc/homeserver (one-time, non-destructive)
+    if [ -d /etc/openos ] && [ ! -L /etc/openos ]; then
+      # Old directory exists as real dir — move contents to new location
+      for f in /etc/openos/*; do
+        base=$(basename "$f")
+        if [ ! -e "/etc/homeserver/$base" ]; then
+          cp -a "$f" "/etc/homeserver/$base" 2>/dev/null || true
+        fi
+      done
+      # Replace old dir with symlink to new location
+      rm -rf /etc/openos
+      ln -sfn /etc/homeserver /etc/openos
+    elif [ ! -e /etc/openos ]; then
+      ln -sfn /etc/homeserver /etc/openos
+    fi
+
+    if [ -d /var/lib/openos ] && [ ! -L /var/lib/openos ]; then
+      for f in /var/lib/openos/*; do
+        base=$(basename "$f")
+        if [ ! -e "/var/lib/homeserver/$base" ]; then
+          cp -a "$f" "/var/lib/homeserver/$base" 2>/dev/null || true
+        fi
+      done
+      rm -rf /var/lib/openos
+      ln -sfn /var/lib/homeserver /var/lib/openos
+    elif [ ! -e /var/lib/openos ]; then
+      ln -sfn /var/lib/homeserver /var/lib/openos
+    fi
+  '';
 }
