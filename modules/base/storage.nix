@@ -30,6 +30,15 @@ in {
         "map to guest" = "Bad User";
         "logging" = "systemd";
         "log level" = "1";
+        # macOS compatibility
+        "vfs objects" = "fruit streams_xattr";
+        "fruit:metadata" = "stream";
+        "fruit:model" = "MacSamba";
+        "fruit:posix_rename" = "yes";
+        "fruit:zero_file_id" = "yes";
+        "min protocol" = "SMB2";
+        # Include dynamically created shares from admin panel
+        "include" = "/etc/homeserver/smb-shares.conf";
       };
     };
   };

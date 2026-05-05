@@ -274,5 +274,8 @@ in {
 
     migrate_dir /etc/openos      /etc/homeserver
     migrate_dir /var/lib/openos  /var/lib/homeserver
+
+    # Ensure smb-shares.conf exists so samba can start (include directive)
+    touch /etc/homeserver/smb-shares.conf
   '';
 }

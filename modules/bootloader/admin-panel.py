@@ -1043,24 +1043,19 @@ def get_shares():
 
 
 def save_shares(shares):
-    """Write shares config and regenerate smb.conf includes."""
+    """Write shares config and regenerate single smb-shares.conf."""
     with open(SHARES_CONF, "w") as f:
         f.write(json.dumps(shares, indent=2))
-    # Write Samba share definitions
-    conf_dir = "/etc/samba/shares.d"
-    os.makedirs(conf_dir, exist_ok=True)
-    # Clear old share files
-    for fname in os.listdir(conf_dir):
-        os.remove(os.path.join(conf_dir, fname))
+    conf_path = "/etc/homeserver/smb-shares.conf"
+    lines = []
     for share in shares:
-        conf_path = os.path.join(conf_dir, share["name"] + ".conf")
-        lines = [
-            "[%s]" % share["name"],
-            "   path = %s" % share["path"],
-            "   browseable = yes",
-            "   read only = %s" % ("yes" if share.get("readonly", False) else "no"),
-            "   guest ok = %s" % ("yes" if share.get("guest", False) else "no"),
-        ]
+        lines.append("[%s]" % share["name"])
+        lines.append("   path = %s" % share["path"])
+        lines.append("   browseable = yes")
+        lines.append("   read only = %s" % ("yes" if share.get("readonly", False) else "no"))
+        lines.append("   guest ok = %s" % ("yes" if share.get("guest", False) else "no"))
+        if share.get("guest"):
+            lines.append("   force user = root")
         if share.get("valid_users"):
             lines.append("   valid users = %s" % " ".join(share["valid_users"]))
         if share.get("write_list"):
@@ -1068,10 +1063,10 @@ def save_shares(shares):
         lines.append("   create mask = 0664")
         lines.append("   directory mask = 0775")
         lines.append("")
-        with open(conf_path, "w") as f:
-            f.write("\n".join(lines))
-    # Reload samba
-    subprocess.run(["systemctl", "reload", "smbd"],
+    with open(conf_path, "w") as f:
+        f.write("\n".join(lines))
+    # Reload samba (NixOS service name)
+    subprocess.run(["systemctl", "restart", "samba-smbd"],
                    capture_output=True, timeout=10, env=ENV_WITH_PATH)
 
 
