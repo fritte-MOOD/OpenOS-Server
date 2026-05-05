@@ -65,43 +65,69 @@ def ensure_dns():
 
 
 def nixos_rebuild_switch(log_fn):
-    """Run nixos-rebuild switch with anti-hang watchdog.
+    """Run nixos-rebuild switch with timeout fallback.
 
-    Spawns a background process that kills systemctl reload/restart calls
-    stuck for >30s (dbus/firewall hang), so the activation phase completes.
+    If switch hangs for >5 min (dbus/firewall reload deadlock), kills it
+    and falls back to nixos-rebuild boot + automatic reboot.
     """
     arch_r = subprocess.run(["uname", "-m"], capture_output=True, text=True, env=ENV_WITH_PATH)
     arch = arch_r.stdout.strip()
     flake_target = "homeserver" if arch == "x86_64" else "homeserver-arm"
 
-    watchdog = subprocess.Popen(
+    ensure_dns()
+    proc = subprocess.Popen(
         [BASH, "-c",
-         'while true; do sleep 8; '
-         'for p in $(pgrep -f "systemctl.*(reload|restart).*(dbus|firewall)" 2>/dev/null); do '
-         '  age=$(ps -o etimes= -p "$p" 2>/dev/null | tr -d " "); '
-         '  if [ -n "$age" ] && [ "$age" -gt 30 ]; then kill "$p" 2>/dev/null; fi; '
-         'done; done'],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=ENV_WITH_PATH
+         "nixos-rebuild switch --flake %s#%s --impure 2>&1" % (FLAKE_DIR, flake_target)],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, bufsize=1, env=ENV_WITH_PATH
     )
 
+    timed_out = [False]
+
+    def _kill_on_timeout():
+        timed_out[0] = True
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+    timer = threading.Timer(300, _kill_on_timeout)
+    timer.start()
+
     try:
-        ensure_dns()
-        proc = subprocess.Popen(
-            [BASH, "-c",
-             "nixos-rebuild switch --flake %s#%s --impure 2>&1" % (FLAKE_DIR, flake_target)],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1, env=ENV_WITH_PATH
-        )
         for line in iter(proc.stdout.readline, ""):
             log_fn(line.rstrip())
         proc.wait()
-        return proc.returncode
     finally:
-        watchdog.kill()
-        try:
-            watchdog.wait(timeout=5)
-        except Exception:
-            pass
+        timer.cancel()
+
+    if timed_out[0]:
+        log_fn("")
+        log_fn("Live switch timed out (activation hang detected).")
+        log_fn("Falling back to boot + reboot...")
+        log_fn("")
+
+        boot_proc = subprocess.Popen(
+            [BASH, "-c",
+             "nixos-rebuild boot --flake %s#%s --impure 2>&1" % (FLAKE_DIR, flake_target)],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1, env=ENV_WITH_PATH
+        )
+        for line in iter(boot_proc.stdout.readline, ""):
+            log_fn(line.rstrip())
+        boot_proc.wait()
+
+        if boot_proc.returncode == 0:
+            log_fn("")
+            log_fn("=== Update installed. Rebooting in 10 seconds... ===")
+            time.sleep(10)
+            subprocess.Popen(["reboot"], env=ENV_WITH_PATH)
+            return 0
+        else:
+            log_fn("=== Boot install also failed (exit code %d) ===" % boot_proc.returncode)
+            return boot_proc.returncode
+
+    return proc.returncode
 
 task_log = []
 task_running = False
