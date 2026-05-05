@@ -63,6 +63,46 @@ def ensure_dns():
     except Exception:
         pass
 
+
+def nixos_rebuild_switch(log_fn):
+    """Run nixos-rebuild switch with anti-hang watchdog.
+
+    Spawns a background process that kills systemctl reload/restart calls
+    stuck for >30s (dbus/firewall hang), so the activation phase completes.
+    """
+    arch_r = subprocess.run(["uname", "-m"], capture_output=True, text=True, env=ENV_WITH_PATH)
+    arch = arch_r.stdout.strip()
+    flake_target = "homeserver" if arch == "x86_64" else "homeserver-arm"
+
+    watchdog = subprocess.Popen(
+        [BASH, "-c",
+         'while true; do sleep 8; '
+         'for p in $(pgrep -f "systemctl.*(reload|restart).*(dbus|firewall)" 2>/dev/null); do '
+         '  age=$(ps -o etimes= -p "$p" 2>/dev/null | tr -d " "); '
+         '  if [ -n "$age" ] && [ "$age" -gt 30 ]; then kill "$p" 2>/dev/null; fi; '
+         'done; done'],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=ENV_WITH_PATH
+    )
+
+    try:
+        ensure_dns()
+        proc = subprocess.Popen(
+            [BASH, "-c",
+             "nixos-rebuild switch --flake %s#%s --impure 2>&1" % (FLAKE_DIR, flake_target)],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1, env=ENV_WITH_PATH
+        )
+        for line in iter(proc.stdout.readline, ""):
+            log_fn(line.rstrip())
+        proc.wait()
+        return proc.returncode
+    finally:
+        watchdog.kill()
+        try:
+            watchdog.wait(timeout=5)
+        except Exception:
+            pass
+
 task_log = []
 task_running = False
 task_done = False
@@ -1115,29 +1155,16 @@ def mount_disk(device, mountpoint, fstype, role="data"):
         log("Created mountpoint directory")
 
         log("")
-        ensure_dns()
         log("Rebuilding system...")
-        arch_r = subprocess.run(["uname", "-m"], capture_output=True, text=True, env=ENV_WITH_PATH)
-        arch = arch_r.stdout.strip()
-        flake_target = "homeserver" if arch == "x86_64" else "homeserver-arm"
+        rc = nixos_rebuild_switch(log)
 
-        proc = subprocess.Popen(
-            [BASH, "-c",
-             "nixos-rebuild switch --flake %s#%s --impure 2>&1" % (FLAKE_DIR, flake_target)],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1, env=ENV_WITH_PATH
-        )
-        for line in iter(proc.stdout.readline, ""):
-            log(line.rstrip())
-        proc.wait()
-
-        if proc.returncode == 0:
+        if rc == 0:
             log("")
             log("=== Mount configured successfully ===")
             save_generation_note("Mount added: %s" % mountpoint)
         else:
             log("")
-            log("=== Mount FAILED (exit code %d) ===" % proc.returncode)
+            log("=== Mount FAILED (exit code %d) ===" % rc)
     except Exception as e:
         log("ERROR: %s" % e)
 
@@ -1166,29 +1193,16 @@ def unmount_disk(mountpoint):
         log("Updated mounts.nix")
 
         log("")
-        ensure_dns()
         log("Rebuilding system...")
-        arch_r = subprocess.run(["uname", "-m"], capture_output=True, text=True, env=ENV_WITH_PATH)
-        arch = arch_r.stdout.strip()
-        flake_target = "homeserver" if arch == "x86_64" else "homeserver-arm"
+        rc = nixos_rebuild_switch(log)
 
-        proc = subprocess.Popen(
-            [BASH, "-c",
-             "nixos-rebuild switch --flake %s#%s --impure 2>&1" % (FLAKE_DIR, flake_target)],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1, env=ENV_WITH_PATH
-        )
-        for line in iter(proc.stdout.readline, ""):
-            log(line.rstrip())
-        proc.wait()
-
-        if proc.returncode == 0:
+        if rc == 0:
             log("")
             log("=== Mount removed successfully ===")
             save_generation_note("Mount removed: %s" % mountpoint)
         else:
             log("")
-            log("=== Unmount FAILED (exit code %d) ===" % proc.returncode)
+            log("=== Unmount FAILED (exit code %d) ===" % rc)
     except Exception as e:
         log("ERROR: %s" % e)
 
@@ -1332,30 +1346,16 @@ def install_app(app_id):
         write_apps_nix(enabled)
         log("Updated apps.nix: %s" % ", ".join(sorted(enabled)))
         log("")
-        ensure_dns()
         log("Building system... (this may take several minutes)")
+        rc = nixos_rebuild_switch(log)
 
-        arch_r = subprocess.run(["uname", "-m"], capture_output=True, text=True, env=ENV_WITH_PATH)
-        arch = arch_r.stdout.strip()
-        flake_target = "homeserver" if arch == "x86_64" else "homeserver-arm"
-
-        proc = subprocess.Popen(
-            [BASH, "-c",
-             "nixos-rebuild switch --flake %s#%s --impure 2>&1" % (FLAKE_DIR, flake_target)],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1, env=ENV_WITH_PATH
-        )
-        for line in iter(proc.stdout.readline, ""):
-            log(line.rstrip())
-        proc.wait()
-
-        if proc.returncode == 0:
+        if rc == 0:
             log("")
             log("=== %s installed successfully ===" % app_id)
             save_generation_note("Installed %s" % app_id)
         else:
             log("")
-            log("=== Install FAILED (exit code %d) ===" % proc.returncode)
+            log("=== Install FAILED (exit code %d) ===" % rc)
             log("Rolling back apps.nix...")
             enabled.discard(app_id)
             write_apps_nix(enabled)
@@ -1386,30 +1386,16 @@ def uninstall_app(app_id):
         write_apps_nix(enabled)
         log("Updated apps.nix: %s" % (", ".join(sorted(enabled)) or "(none)"))
         log("")
-        ensure_dns()
         log("Rebuilding system...")
+        rc = nixos_rebuild_switch(log)
 
-        arch_r = subprocess.run(["uname", "-m"], capture_output=True, text=True, env=ENV_WITH_PATH)
-        arch = arch_r.stdout.strip()
-        flake_target = "homeserver" if arch == "x86_64" else "homeserver-arm"
-
-        proc = subprocess.Popen(
-            [BASH, "-c",
-             "nixos-rebuild switch --flake %s#%s --impure 2>&1" % (FLAKE_DIR, flake_target)],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1, env=ENV_WITH_PATH
-        )
-        for line in iter(proc.stdout.readline, ""):
-            log(line.rstrip())
-        proc.wait()
-
-        if proc.returncode == 0:
+        if rc == 0:
             log("")
             log("=== %s uninstalled successfully ===" % app_id)
             save_generation_note("Removed %s" % app_id)
         else:
             log("")
-            log("=== Uninstall FAILED (exit code %d) ===" % proc.returncode)
+            log("=== Uninstall FAILED (exit code %d) ===" % rc)
     except Exception as e:
         log("ERROR: %s" % e)
 
@@ -2902,31 +2888,17 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
                     if r.stdout.strip():
                         log(r.stdout.strip())
 
-                    arch_r = subprocess.run(["uname", "-m"], capture_output=True, text=True, env=ENV_WITH_PATH)
-                    arch = arch_r.stdout.strip()
-                    flake_target = "homeserver" if arch == "x86_64" else "homeserver-arm"
-
                     log("")
-                    log("Ensuring DNS for nix-daemon...")
-                    ensure_dns()
                     log("Building and switching... (this may take a few minutes)")
-                    proc = subprocess.Popen(
-                        [BASH, "-c",
-                         "nixos-rebuild switch --flake %s#%s --impure 2>&1" % (FLAKE_DIR, flake_target)],
-                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                        text=True, bufsize=1, env=ENV_WITH_PATH
-                    )
-                    for line in iter(proc.stdout.readline, ""):
-                        log(line.rstrip())
-                    proc.wait()
+                    rc = nixos_rebuild_switch(log)
 
-                    if proc.returncode == 0:
+                    if rc == 0:
                         log("")
                         log("=== Update applied successfully ===")
                         save_generation_note("System update (live)")
                     else:
                         log("")
-                        log("=== Update FAILED (exit code %d) ===" % proc.returncode)
+                        log("=== Update FAILED (exit code %d) ===" % rc)
                 except Exception as e:
                     log("ERROR: %s" % e)
 
