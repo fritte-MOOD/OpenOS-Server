@@ -1630,7 +1630,7 @@ input:focus,select:focus{outline:none;border-color:#f97316}
 <label>Hostname</label><input name="hostname" value="homeserver" required>
 <label>Domain</label><input name="domain" value="homeserver.local">
 <label>Timezone</label><input name="timezone" value="Europe/Berlin">
-<label>Admin Password</label><input name="password" type="password" required minlength="8">
+<label>Admin Password</label><input name="password" type="password" required minlength="8" placeholder="Min. 8 characters"><div style="font-size:.75rem;color:#888;margin-top:.2rem">Minimum 8 characters</div>
 </div>
 <div class="step"><h2>2. Tailscale</h2>
 <label>Headscale Server URL</label><input name="headscale_url" value="https://tuktuk.redirectme.net">
@@ -1663,13 +1663,16 @@ fetch('/api/task-log?from='+n).then(function(r){return r.json()}).then(function(
 if(d.lines&&d.lines.length>0){for(var i=0;i<d.lines.length;i++){log.textContent=log.textContent+d.lines[i]+'\n';}
 log.setAttribute('data-n',String(n+d.lines.length));log.scrollTop=log.scrollHeight;}
 if(d.done&&d.lines.length===0){clearInterval(timer);
-var last=log.textContent.trim().split('\n').pop()||'';
-if(last.indexOf('complete')>=0||last.indexOf('successful')>=0){st.className='st ok';st.style.display='block';st.textContent='Setup complete! Server will reboot shortly.';}
+var allText=log.textContent||'';
+if(allText.indexOf('setup complete')>=0||allText.indexOf('Setup complete')>=0||allText.indexOf('Rebooting into')>=0||allText.indexOf('Build successful')>=0){st.className='st ok';st.style.display='block';st.textContent='Setup complete! Server will reboot shortly.';}
 else{st.className='st err';st.style.display='block';st.textContent='Setup failed. Check log above.';document.getElementById('btn').disabled=false;document.getElementById('btn').textContent='Retry';}}
 });
 }
 document.getElementById('f').addEventListener('submit',function(e){
-e.preventDefault();var b=document.getElementById('btn');b.disabled=true;b.textContent='Installing...';
+e.preventDefault();
+var pw=e.target.querySelector('[name=password]').value;
+if(pw.length<8){alert('Password must be at least 8 characters.');return;}
+var b=document.getElementById('btn');b.disabled=true;b.textContent='Installing...';
 log.style.display='block';log.textContent='';log.setAttribute('data-n','0');
 st.style.display='block';st.className='st wk';st.textContent='Installing... this may take 10-30 minutes.';
 var fd=new FormData(e.target);var data=Object.fromEntries(fd.entries());
