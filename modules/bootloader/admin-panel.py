@@ -922,25 +922,24 @@ def create_zfs_pool(pool_name, disks, raid_type="raidz1"):
         log("")
         log("Creating pool...")
 
+        mountpoint = "/data"
+        if os.path.isdir(mountpoint) and os.listdir(mountpoint):
+            log("Note: %s exists and is not empty — mounting pool at %s/%s instead." % (mountpoint, mountpoint, pool_name))
+            mountpoint = "%s/%s" % (mountpoint, pool_name)
+
         # Build zpool create command
-        cmd = ["zpool", "create", "-f",
-               "-o", "ashift=12",
-               "-O", "atime=off",
-               "-O", "compression=lz4",
-               "-O", "xattr=sa",
-               "-O", "acltype=posixacl",
-               "-O", "mountpoint=/data",
-               pool_name, raid_type] + disks
+        base_opts = ["zpool", "create", "-f",
+                     "-o", "ashift=12",
+                     "-O", "atime=off",
+                     "-O", "compression=lz4",
+                     "-O", "xattr=sa",
+                     "-O", "acltype=posixacl",
+                     "-O", "mountpoint=%s" % mountpoint]
 
         if raid_type == "stripe":
-            cmd = ["zpool", "create", "-f",
-                   "-o", "ashift=12",
-                   "-O", "atime=off",
-                   "-O", "compression=lz4",
-                   "-O", "xattr=sa",
-                   "-O", "acltype=posixacl",
-                   "-O", "mountpoint=/data",
-                   pool_name] + disks
+            cmd = base_opts + [pool_name] + disks
+        else:
+            cmd = base_opts + [pool_name, raid_type] + disks
 
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
