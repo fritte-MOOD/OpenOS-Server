@@ -1862,9 +1862,9 @@ td{padding:.4rem;border-bottom:1px solid #222}
 </div>
 <div id="update-status-info" style="margin-top:.8rem;color:#888;font-size:.85rem">Checking for updates...</div>
 <div class="actions" style="margin-top:1rem">
+<button class="btn btn-gray" onclick="doFetch()">Auf Updates prüfen</button>
 <button class="btn" id="btn-apply" onclick="doApply()">Update &amp; Apply</button>
 <button class="btn btn-gray" onclick="doUpdate()">Safe Update (Reboot)</button>
-<button class="btn btn-gray" onclick="doFetch()">Check for Updates</button>
 </div>
 <div id="update-progress" style="display:none;margin-top:1rem">
 <div style="display:flex;align-items:center;gap:.8rem;margin-bottom:.5rem">

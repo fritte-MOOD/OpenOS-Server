@@ -79,6 +79,7 @@ in {
       bash git coreutils gnugrep gawk util-linux
       nix mkpasswd systemd grub2 tailscale
       smartmontools iproute2
+      gptfdisk e2fsprogs xfsprogs zfs
     ];
 
     serviceConfig = {
