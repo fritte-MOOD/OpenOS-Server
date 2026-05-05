@@ -43,13 +43,6 @@
 
     appModules = [
       ./modules/apps/registry.nix
-      ./modules/apps/nextcloud.nix
-      ./modules/apps/ollama.nix
-      ./modules/apps/syncthing.nix
-      ./modules/apps/jellyfin.nix
-      ./modules/apps/vaultwarden.nix
-      ./modules/apps/gitea.nix
-      ./modules/apps/hedgedoc.nix
     ];
 
   in {

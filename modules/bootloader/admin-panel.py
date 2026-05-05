@@ -433,16 +433,20 @@ def get_configured_mounts():
     try:
         with open(MOUNTS_NIX) as f:
             content = f.read()
+        roles = {}
+        for rm in re.finditer(r'#\s*role=(\S+)\s*\n\s*"([^"]+)"', content):
+            roles[rm.group(2)] = rm.group(1)
         for m in re.finditer(
-            r'"([^"]+)"\s*=\s*\{\s*device\s*=\s*"([^"]+)";\s*fsType\s*=\s*"([^"]+)";\s*(?:options\s*=\s*\[([^\]]*)\];\s*)?(?:role\s*=\s*"([^"]*)";\s*)?',
+            r'"([^"]+)"\s*=\s*\{\s*device\s*=\s*"([^"]+)";\s*fsType\s*=\s*"([^"]+)";\s*(?:options\s*=\s*\[([^\]]*)\];\s*)?',
             content
         ):
+            mp = m.group(1)
             mounts.append({
-                "mountpoint": m.group(1),
+                "mountpoint": mp,
                 "device": m.group(2),
                 "fsType": m.group(3),
                 "options": [o.strip().strip('"') for o in (m.group(4) or "").split() if o.strip()],
-                "role": m.group(5) or "data",
+                "role": roles.get(mp, "data"),
             })
     except FileNotFoundError:
         pass
@@ -450,12 +454,15 @@ def get_configured_mounts():
 
 
 def write_mounts_nix(mounts):
-    """Write /etc/homeserver/mounts.nix from a list of mount dicts."""
+    """Write /etc/homeserver/mounts.nix from a list of mount dicts.
+    Role is stored as a Nix comment since fileSystems doesn't accept custom attrs."""
     lines = ["{\n", "  fileSystems = {\n"]
     for m in mounts:
         opts = ""
         if m.get("options"):
             opts = '      options = [ %s ];\n' % " ".join('"%s"' % o for o in m["options"])
+        role = m.get("role", "data")
+        lines.append('    # role=%s\n' % role)
         lines.append('    "%s" = {\n' % m["mountpoint"])
         lines.append('      device = "%s";\n' % m["device"])
         lines.append('      fsType = "%s";\n' % m["fsType"])
@@ -469,7 +476,8 @@ def write_mounts_nix(mounts):
 
 
 def get_unmounted_partitions():
-    """Find partitions that are not currently mounted (candidates for mounting)."""
+    """Find partitions that are not currently mounted (candidates for mounting).
+    Also includes unformatted disks/partitions (fstype will be empty string)."""
     candidates = []
     try:
         r = subprocess.run(
@@ -477,27 +485,88 @@ def get_unmounted_partitions():
             capture_output=True, text=True, timeout=10, env=ENV_WITH_PATH)
         data = json.loads(r.stdout)
         for dev in data.get("blockdevices", []):
+            name = dev.get("name", "")
+            if name.startswith("loop") or name.startswith("sr") or name.startswith("fd"):
+                continue
             children = dev.get("children", [])
             if not children:
-                if dev.get("type") == "disk" and not dev.get("mountpoint") and dev.get("fstype"):
+                if dev.get("type") == "disk" and not dev.get("mountpoint"):
                     candidates.append({
-                        "device": "/dev/" + dev["name"],
+                        "device": "/dev/" + name,
                         "size": dev.get("size", 0),
-                        "fstype": dev.get("fstype", ""),
+                        "fstype": dev.get("fstype") or "",
                         "model": (dev.get("model") or "").strip(),
                     })
                 continue
             for child in children:
-                if child.get("type") == "part" and not child.get("mountpoint") and child.get("fstype"):
+                if child.get("type") == "part" and not child.get("mountpoint"):
                     candidates.append({
                         "device": "/dev/" + child["name"],
                         "size": child.get("size", 0),
-                        "fstype": child.get("fstype", ""),
+                        "fstype": child.get("fstype") or "",
                         "model": (dev.get("model") or "").strip(),
                     })
     except Exception:
         pass
     return candidates
+
+
+def format_disk(device, fstype="ext4"):
+    """Format a disk/partition with the specified filesystem."""
+    global task_log, task_running, task_done, task_name
+    task_log = []
+    task_running = True
+    task_done = False
+    task_name = "Format %s" % device
+
+    def log(msg):
+        task_log.append(msg)
+
+    log("=== Formatting %s as %s ===" % (device, fstype))
+
+    try:
+        if fstype not in ("ext4", "xfs"):
+            log("ERROR: Unsupported filesystem type: %s" % fstype)
+            task_running = False
+            task_done = True
+            return
+
+        if os.path.ismount(device):
+            log("ERROR: Device appears to be mounted. Unmount first.")
+            task_running = False
+            task_done = True
+            return
+
+        r = subprocess.run(
+            ["lsblk", "-no", "MOUNTPOINT", device],
+            capture_output=True, text=True, timeout=5, env=ENV_WITH_PATH)
+        if r.stdout.strip():
+            log("ERROR: Device has mounted partitions. Unmount first.")
+            task_running = False
+            task_done = True
+            return
+
+        cmd = ["mkfs.%s" % fstype, "-f" if fstype == "xfs" else "-F", device]
+        log("Running: %s" % " ".join(cmd))
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1, env=ENV_WITH_PATH
+        )
+        for line in iter(proc.stdout.readline, ""):
+            log(line.rstrip())
+        proc.wait()
+
+        if proc.returncode == 0:
+            log("")
+            log("=== Format complete ===")
+        else:
+            log("")
+            log("=== Format FAILED (exit code %d) ===" % proc.returncode)
+    except Exception as e:
+        log("ERROR: %s" % e)
+
+    task_running = False
+    task_done = True
 
 
 # ==================== ZFS POOL MANAGEMENT ====================
@@ -1212,15 +1281,7 @@ def get_apps():
     except Exception:
         registry = {}
 
-    hardcoded = {
-        "jellyfin": {"name": "Jellyfin", "description": "Stream movies, music, and shows", "icon": "tv", "category": "media", "ports": [8096]},
-        "nextcloud": {"name": "Nextcloud", "description": "File sync and collaboration", "icon": "cloud", "category": "files", "ports": [443]},
-        "ollama": {"name": "Ollama + Open WebUI", "description": "Run local LLMs on your server", "icon": "brain", "category": "ai", "ports": [11434, 3000]},
-        "syncthing": {"name": "Syncthing", "description": "Continuous file synchronization", "icon": "sync", "category": "files", "ports": [8384]},
-        "vaultwarden": {"name": "Vaultwarden", "description": "Password manager (Bitwarden compatible)", "icon": "lock", "category": "security", "ports": [8222]},
-        "gitea": {"name": "Gitea", "description": "Self-hosted Git service", "icon": "git", "category": "development", "ports": [3000]},
-        "hedgedoc": {"name": "HedgeDoc", "description": "Collaborative markdown editor", "icon": "doc", "category": "tools", "ports": [3000]},
-    }
+    hardcoded = {}
 
     seen = set()
     for key, meta in registry.items():
@@ -1733,7 +1794,7 @@ td{padding:.4rem;border-bottom:1px solid #222}
 <a href="#storage" onclick="showPage('storage',this)">Storage</a>
 <a href="#network" onclick="showPage('network',this)">Network</a>
 <a href="#apps" onclick="showPage('apps',this)">Apps</a>
-<a href="#system" onclick="showPage('system',this)">System</a>
+<a href="#update" onclick="showPage('update',this)">Update</a>
 </nav>
 
 <!-- ==================== DASHBOARD ==================== -->
@@ -1772,7 +1833,7 @@ td{padding:.4rem;border-bottom:1px solid #222}
 <div class="card">
 <div style="display:flex;justify-content:space-between;align-items:center">
 <h2 style="margin:0">Disks</h2>
-<button class="btn btn-sm btn-gray" onclick="showMountDialog()">Mount Disk</button>
+<div><button class="btn btn-sm btn-gray" onclick="showFormatDialog()" style="margin-right:.5rem">Format Disk</button><button class="btn btn-sm btn-gray" onclick="showMountDialog()">Mount Disk</button></div>
 </div>
 <div id="disk-list" style="margin-top:.8rem">Loading...</div>
 </div>
@@ -1803,7 +1864,7 @@ td{padding:.4rem;border-bottom:1px solid #222}
 </div>
 
 <!-- ==================== SYSTEM ==================== -->
-<div class="page" id="p-system">
+<div class="page" id="p-update">
 
 <div class="card" id="update-status-card">
 <div style="display:flex;justify-content:space-between;align-items:center">
@@ -1859,6 +1920,25 @@ td{padding:.4rem;border-bottom:1px solid #222}
 <div class="modal-actions">
 <button class="btn btn-gray" onclick="closeMountDialog()">Cancel</button>
 <button class="btn" onclick="doMount()">Mount &amp; Apply</button>
+</div>
+</div>
+</div>
+
+<!-- ==================== FORMAT DISK DIALOG ==================== -->
+<div class="modal-overlay" id="format-modal">
+<div class="modal">
+<h3>Format Disk</h3>
+<p style="color:#f97316;font-size:.85rem;margin-bottom:.8rem">&#x26A0; This will erase ALL data on the selected device!</p>
+<label>Device</label>
+<select id="format-device"><option value="">Loading...</option></select>
+<label>Filesystem</label>
+<select id="format-fstype">
+<option value="ext4">ext4 (recommended)</option>
+<option value="xfs">XFS</option>
+</select>
+<div class="modal-actions">
+<button class="btn btn-gray" onclick="closeFormatDialog()">Cancel</button>
+<button class="btn" style="background:#ef4444" onclick="doFormat()">Format</button>
 </div>
 </div>
 </div>
@@ -1980,7 +2060,7 @@ if(el)el.className='active';
 if(id==='apps')loadApps();
 if(id==='storage')loadStorage();
 if(id==='network')loadNetwork();
-if(id==='system'){loadUpdateStatus();loadGenerations();}
+if(id==='update'){loadUpdateStatus();loadGenerations();}
 };
 
 function load(){
@@ -2071,8 +2151,13 @@ h+='</tbody></table>';
 el.innerHTML=h;
 });
 
-/* Physical Disks */
-fetch('/api/storage').then(function(r){return r.json()}).then(function(d){
+/* Physical Disks — load configured mounts to show unmount buttons */
+Promise.all([
+fetch('/api/storage').then(function(r){return r.json()}),
+fetch('/api/storage/mounts').then(function(r){return r.json()})
+]).then(function(results){
+var d=results[0];var cfgMounts=results[1]||[];
+var cfgSet={};for(var k=0;k<cfgMounts.length;k++){cfgSet[cfgMounts[k].mountpoint]=true;}
 var el=document.getElementById('disk-list');
 if(!d.disks||!d.disks.length){el.innerHTML='<div style="color:#888">No disks detected.</div>';return;}
 var h='';
@@ -2090,7 +2175,9 @@ else if(p.size){info=fmtBytes(p.size)+(p.mountpoint?'':' unmounted');}
 h=h+'<div class="part-row"><span class="part-name">'+p.name+(p.fstype?' <span style="color:#555;font-size:.75rem">'+p.fstype+'</span>':'')+'</span>';
 if(p.mountpoint){
 h=h+'<div class="part-bar"><div class="bar-track"><div class="bar-fill '+barColor(pct)+'" style="width:'+pct+'%"></div></div></div>';
-h=h+'<span class="part-info">'+p.mountpoint+' &mdash; '+info+'</span>';
+h=h+'<span class="part-info">'+p.mountpoint+' &mdash; '+info;
+if(cfgSet[p.mountpoint]){h=h+' <button class="btn btn-sm btn-gray" style="margin-left:.5rem;padding:0 .4rem;font-size:.7rem" onclick="doUnmount(\''+p.mountpoint+'\')">Unmount</button>';}
+h=h+'</span>';
 }else{
 h=h+'<div class="part-bar"></div><span class="part-info" style="color:#555">'+info+'</span>';
 }
@@ -2162,14 +2249,47 @@ document.getElementById('mount-modal').className='modal-overlay show';
 fetch('/api/storage/unmounted').then(function(r){return r.json()}).then(function(parts){
 var sel=document.getElementById('mount-device');
 sel.innerHTML='';
-if(!parts.length){sel.innerHTML='<option value="">No unmounted partitions found</option>';return;}
-for(var i=0;i<parts.length;i++){
-var p=parts[i];
+var formatted=parts.filter(function(p){return p.fstype;});
+if(!formatted.length){sel.innerHTML='<option value="">No mountable partitions (format a disk first)</option>';return;}
+for(var i=0;i<formatted.length;i++){
+var p=formatted[i];
 sel.innerHTML=sel.innerHTML+'<option value="'+p.device+'">'+p.device+' ('+fmtBytes(p.size)+', '+p.fstype+(p.model?', '+p.model:'')+')</option>';
 }
 });
 };
 window.closeMountDialog=function(){document.getElementById('mount-modal').className='modal-overlay';};
+
+window.showFormatDialog=function(){
+document.getElementById('format-modal').className='modal-overlay show';
+fetch('/api/storage/unmounted').then(function(r){return r.json()}).then(function(parts){
+var sel=document.getElementById('format-device');
+sel.innerHTML='';
+if(!parts.length){sel.innerHTML='<option value="">No available disks/partitions</option>';return;}
+for(var i=0;i<parts.length;i++){
+var p=parts[i];
+var label=p.device+' ('+fmtBytes(p.size)+(p.fstype?', '+p.fstype:', unformatted')+(p.model?', '+p.model:'')+')';
+sel.innerHTML=sel.innerHTML+'<option value="'+p.device+'">'+label+'</option>';
+}
+});
+};
+window.closeFormatDialog=function(){document.getElementById('format-modal').className='modal-overlay';};
+
+window.doFormat=function(){
+var dev=document.getElementById('format-device').value;
+var fs=document.getElementById('format-fstype').value;
+if(!dev){alert('Select a device');return;}
+if(!confirm('Format '+dev+' as '+fs+'? ALL DATA WILL BE LOST!'))return;
+closeFormatDialog();
+var log=document.getElementById('storage-buildlog');
+var st=document.getElementById('storage-buildstatus');
+log.style.display='block';log.textContent='';log.setAttribute('data-n','0');
+st.style.display='block';st.className='working';st.style.background='#1a1000';st.style.color='#f97316';st.textContent='Formatting '+dev+' as '+fs+'...';
+fetch('/api/storage/format',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device:dev,fstype:fs})})
+.then(function(r){return r.json()}).then(function(d){
+if(d.ok){storageTimer=setInterval(pollStorageLog,2000);}
+else{st.style.background='#2d0a0a';st.style.color='#ef4444';st.textContent='Error: '+(d.error||'unknown');}
+});
+};
 
 window.doMount=function(){
 var dev=document.getElementById('mount-device').value;
@@ -2214,7 +2334,7 @@ log.setAttribute('data-n',String(n+d.lines.length));log.scrollTop=log.scrollHeig
 if(d.done&&d.lines.length===0){
 clearInterval(storageTimer);
 var last=log.textContent.trim().split('\n').pop()||'';
-if(last.indexOf('successfully')>=0){st.style.background='#052e16';st.style.color='#22c55e';st.textContent='Done!';}
+if(last.indexOf('successfully')>=0||last.indexOf('complete')>=0){st.style.background='#052e16';st.style.color='#22c55e';st.textContent='Done!';}
 else{st.style.background='#2d0a0a';st.style.color='#ef4444';st.textContent='Failed. Check log above.';}
 loadStorage();
 }
@@ -2655,7 +2775,7 @@ out.textContent=out.textContent+'$ ';out.scrollTop=out.scrollHeight;
 document.getElementById('cmd').addEventListener('keypress',function(e){if(e.key==='Enter')runCmd();});
 
 var hash=location.hash.replace('#','');
-var tabMap={'dashboard':0,'storage':1,'network':2,'apps':3,'system':4};
+var tabMap={'dashboard':0,'storage':1,'network':2,'apps':3,'update':4};
 if(hash&&tabMap[hash]!=null){
 showPage(hash,document.querySelectorAll('nav a')[tabMap[hash]]);
 }
@@ -2863,9 +2983,12 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
             try:
                 r = subprocess.run(["blkid", "-o", "value", "-s", "TYPE", device],
                                    capture_output=True, text=True, timeout=5, env=ENV_WITH_PATH)
-                fstype = r.stdout.strip() or "ext4"
+                fstype = r.stdout.strip()
             except Exception:
-                fstype = "ext4"
+                fstype = ""
+            if not fstype:
+                self._json({"ok": False, "error": "No filesystem detected on %s. Format the disk first." % device})
+                return
             t = threading.Thread(target=mount_disk, args=(device, mountpoint, fstype, role), daemon=True)
             t.start()
             self._json({"ok": True})
@@ -2879,6 +3002,22 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
                 self._json({"ok": False, "error": "Task already running"})
                 return
             t = threading.Thread(target=unmount_disk, args=(mountpoint,), daemon=True)
+            t.start()
+            self._json({"ok": True})
+
+        elif self.path == "/api/storage/format":
+            device = body.get("device", "")
+            fstype = body.get("fstype", "ext4")
+            if not device:
+                self._json({"ok": False, "error": "device required"})
+                return
+            if fstype not in ("ext4", "xfs"):
+                self._json({"ok": False, "error": "Unsupported filesystem. Use ext4 or xfs."})
+                return
+            if task_running:
+                self._json({"ok": False, "error": "Task already running"})
+                return
+            t = threading.Thread(target=format_disk, args=(device, fstype), daemon=True)
             t.start()
             self._json({"ok": True})
 
